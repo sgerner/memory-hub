@@ -1,0 +1,22 @@
+{
+  "name": "@personal-memory/memorex",
+  "version": "0.1.0",
+  "description": "CLI client for a Personal Memory Hub agent gateway",
+  "type": "module",
+  "bin": {
+    "memorex": "./bin/memorex.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "memory",
+    "agent",
+    "mcp"
+  ],
+  "license": "MIT"
+}

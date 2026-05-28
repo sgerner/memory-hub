@@ -1,0 +1,43 @@
+services:
+  memory-agent-gateway:
+    build: .
+    container_name: memory-agent-gateway
+    restart: unless-stopped
+    environment:
+      - MEMORY_BACKEND_URL=http://agentmemory:3111
+      - MEMORY_BACKEND_TOKEN=${MEMORY_BACKEND_TOKEN:?Set MEMORY_BACKEND_TOKEN in .env}
+      - MEMORY_GATEWAY_TOKEN=${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
+      - MEMORY_ADMIN_TOKEN=${MEMORY_ADMIN_TOKEN:?Set MEMORY_ADMIN_TOKEN in .env}
+      - MEMORY_CATEGORIES=agent,emails,obsidian,documents,code
+      - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-127.0.0.1:*,localhost:*,memory-agent-gateway:*}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
+    networks:
+      - memory-internal
+      - proxy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  memory-dashboard:
+    build: ../dashboard
+    container_name: memory-dashboard
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      - MEMORY_GATEWAY_URL=http://memory-agent-gateway:3112
+      - MEMORY_GATEWAY_TOKEN=${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
+      - MEMORY_HUB_DATA_DIR=/app/data/memory-hub
+      - ORIGIN=https://agentmemory.stevengerner.com
+    volumes:
+      - /home/skynet/opt/appdata/memory-hub:/app/data/memory-hub
+    depends_on:
+      - memory-agent-gateway
+    networks:
+      - proxy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    external: true
+  proxy:
+    external: true

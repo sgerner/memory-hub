@@ -1,0 +1,30 @@
+services:
+  enricher-worker:
+    build: .
+    container_name: enricher-worker
+    restart: unless-stopped
+    environment:
+      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      - LLM_BASE_URL=https://opencode.ai/zen/go/v1
+      - LLM_FREE_BASE_URL=https://opencode.ai/zen/v1
+      - LLM_MODEL=deepseek-v4-flash
+      - LLM_REASONING_EFFORT=low
+      - LLM_API_KEY=${LLM_API_KEY:?Set LLM_API_KEY in .env}
+      - ENRICH_BATCH_SIZE=100
+      - ENRICH_SLEEP_INTERVAL=10
+      - ENRICH_CONCURRENCY=50
+      - ENRICH_FALLBACK_RPM_CAP=4
+      - SECRETS_PATH=/app/shared-settings/secrets.json
+    volumes:
+      - /home/skynet/opt/appdata/memory-hub/settings/enrichment.json:/app/config/settings.json:ro
+      - /home/skynet/opt/appdata/memory-hub/settings:/app/shared-settings:ro
+      - /home/skynet/opt/appdata/memory-hub/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    external: true

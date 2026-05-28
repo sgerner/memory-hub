@@ -1,0 +1,24 @@
+services:
+  github-worker:
+    build: .
+    container_name: github-worker
+    restart: unless-stopped
+    environment:
+      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      - GITHUB_USERNAME=sgerner
+      - SLEEP_INTERVAL=3600
+      - SECRETS_PATH=/app/shared-settings/secrets.json
+    volumes:
+      - /home/skynet/opt/appdata/memory-hub/github-worker:/app/config
+      - /home/skynet/opt/appdata/memory-hub/settings/github.json:/app/config/settings.json:ro
+      - /home/skynet/opt/appdata/memory-hub/settings:/app/shared-settings:ro
+      - /home/skynet/opt/appdata/memory-hub/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    external: true

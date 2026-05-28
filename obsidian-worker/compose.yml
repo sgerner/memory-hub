@@ -1,0 +1,22 @@
+services:
+  obsidian-worker:
+    build: .
+    container_name: obsidian-worker
+    restart: unless-stopped
+    environment:
+      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      - SLEEP_INTERVAL=60
+    volumes:
+      - /home/skynet/opt/appdata/memory-hub/obsidian-worker:/app/config
+      - /home/skynet/opt/appdata/memory-hub/settings/obsidian.json:/app/config/settings.json:ro
+      - /home/skynet/opt/appdata/memory-hub/status:/app/status
+      - /home/skynet/data/ingest/obsidian:/data/obsidian:ro
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    external: true

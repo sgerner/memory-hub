@@ -1,0 +1,16 @@
+# `memorex`
+
+Command-line client for the Personal Memory Hub gateway REST API. Node.js 18 or newer is
+required; there are no runtime dependencies.
+
+```bash
+export MEMOREX_URL=https://memory.example.com
+export MEMOREX_TOKEN=replace-with-agent-gateway-token
+
+memorex recall "What database migration decisions were made?"
+memorex store "Prefer migration scripts to manual ALTER TABLE changes." \
+  --kind preference --retention durable --agent codex
+```
+
+Use `npm pack` to test the distributable package, then change the package scope/name to an
+available npm name before publishing.
