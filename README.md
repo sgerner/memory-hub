@@ -1,326 +1,250 @@
-# Personal Memory Hub
+# Memory Hub
 
-Personal Memory Hub is the stack I use to ingest, enrich, browse, and modify long-lived personal memory for agents. It is built around an existing Memorex Postgres/vector backend and adds:
+Memory Hub is the full memory feature stack for personal and coding agents. It includes the backend, database, local embedding path, enrichment workers, ingestion workers, gateway, dashboard, and CLI in one repository.
 
-- source ingestion workers for email, documents, Obsidian, and GitHub
-- a remote enrichment worker that summarizes and augments records
-- a gateway that exposes agent-facing REST and MCP endpoints
-- a Svelte 5 dashboard for operator control
-- a small CLI for local and agent use
+The repo is designed to support two real deployment modes:
 
-This repository is intended to be shareable on GitHub. It contains source, compose files, and example environment files. It does not contain live secrets or runtime data.
+1. Self-host everything locally.
+2. Attach the workers and gateway to backend services that already exist elsewhere.
 
-## What is in this stack
+It does **not** hardcode a domain. Set your own public origin if you put a reverse proxy in front of it.
 
-| Component | Purpose | Main path |
+## What is included
+
+| Component | Purpose | Path |
 | --- | --- | --- |
-| `agent-gateway` | Agent-facing REST and Streamable HTTP MCP server | `agent-gateway/` |
-| `dashboard` | SvelteKit operator UI | `dashboard/` |
-| `docs-worker` | Filesystem document ingestion | `docs-worker/` |
+| `memorex-api` | Memorex backend API, vector search, migrations, backup staging | `memorex-api/` |
+| `agent-gateway` | Agent-facing REST and Streamable HTTP MCP gateway | `agent-gateway/` |
+| `dashboard` | Svelte 5 / Skeleton operator UI | `dashboard/` |
+| `docs-worker` | Documents ingestion from mounted source trees | `docs-worker/` |
 | `email-worker` | IMAP ingestion and attachment extraction | `email-worker/` |
-| `obsidian-worker` | Obsidian vault ingestion | `obsidian-worker/` |
+| `obsidian-worker` | Obsidian vault synchronization | `obsidian-worker/` |
 | `github-worker` | GitHub ingestion | `github-worker/` |
-| `enricher-worker` | Summary/enrichment worker that calls remote LLMs and re-saves into Memorex | `enricher-worker/` |
-| `memorex-cli` | Dependency-free Node CLI for the gateway | `memorex-cli/` |
+| `enricher-worker` | Remote summarization + local re-embedding | `enricher-worker/` |
+| `memorex-cli` | Small CLI wrapper around the gateway | `memorex-cli/` |
 
-The workers feed the existing Memorex backend at `agentmemory:3111`. The gateway and dashboard are separate layers on top of that backend.
+## What is not included
+
+These are treated as edge infrastructure, not core memory logic:
+
+- Caddy or any other reverse proxy
+- Authentik or any other SSO provider
+- Cloudflare DDNS
+
+You can front the dashboard and gateway with any edge stack you already run. The repo exposes the services on ports so that wiring is straightforward.
 
 ## Opinionated assumptions
 
-This stack makes a few deliberate assumptions. They are important because they shape the design and the deployment model.
+This stack is intentionally opinionated.
 
-1. Single operator, trusted network
+1. The backend is the source of truth
 
-   This is built for one operator controlling personal and coding agents. It is not a multi-tenant SaaS and it does not try to be one. Shared tokens are acceptable inside the trusted internal network, but not for broad public exposure.
+   Memorex owns the database, lifecycle state, and vector search. The gateway and dashboard are thin control layers over it.
 
-2. Memorex backend is the source of truth
+2. Embeddings stay local
 
-   The existing backend service is the system of record for records, vectors, and lifecycle state. The gateway and dashboard do not replace the database or embedder. They sit on top of it.
+   The backend generates embeddings through Ollama. Enrichment uses a remote LLM for metadata and summaries, then writes back through the backend so the local embedding is refreshed.
 
-3. Browsers never receive backend credentials
+3. Secrets are explicit and known
 
-   The dashboard server talks to the gateway. The browser only talks to the dashboard. The browser never needs the backend token or the gateway token.
+   The dashboard only exposes the secret keys the stack actually uses. There is no arbitrary secret editor.
 
-4. Source workers are separate from agent operations
+4. Runtime state is file-backed
 
-   Ingestion workers are intentionally not folded into the gateway yet. They keep running as simple polling or sync processes that write to the backend.
+   Worker settings, state, secrets, statuses, and backups live under a shared host directory. That keeps the system inspectable and easy to back up.
 
-5. Embedding and enrichment are separate
+5. Ingestion workers are independent
 
-   Embeddings are generated locally by the Memorex backend through Ollama. Enrichment uses a remote LLM and then updates the record, which causes a fresh local embedding to be generated.
+   Documents, email, Obsidian, GitHub, and enrichment all run as separate workers. They can be pointed at an external backend or at the local backend in this repo.
 
-6. Configuration is file-backed
+6. The public hostname is configurable
 
-   Worker settings, secrets, status snapshots, and backups are stored as JSON files under the shared app data tree. That keeps the system simple and easy to inspect.
+   The repo never assumes a fixed production hostname. Set your own origin if you want one.
 
-7. Known secrets only
+7. Existing services can be reused
 
-   The dashboard only exposes the secrets we know the stack needs. There is no arbitrary secret editor. That is deliberate.
-
-8. Runtime data stays out of git
-
-   Live `.env` files, caches, build output, and generated state files are not committed. The repo only carries examples and source.
-
-9. Document sources are mounted under the ingest tree
-
-   The docs worker scans subdirectories under `/data/ingest`. The current configured source paths are `gdrive` and `docs`. In this stack, `docs` is the mounted tree that corresponds to the OneDrive-backed document source.
+   If you already have a Memorex backend elsewhere, leave the local backend profile off and point `MEMORY_BACKEND_URL` at it. The local backend profile in this repo owns its own Postgres and Ollama pair.
 
 ## Technical requirements
 
-You need the following before this stack will behave correctly:
-
 - Docker Engine with Compose v2
-- a working internal Docker network named `memory-internal`
-- a proxy network named `proxy`
-- the Memorex backend reachable as `http://agentmemory:3111` on the internal network
-- Ollama reachable from the backend for local embeddings
-- Caddy and Authentik already wired for `agentmemory.stevengerner.com`
-- host mounts for the runtime data tree and ingest tree
-- Node 22 for the dashboard build image
-- Python 3.11 or 3.12 inside the worker containers
+- Node 22 for the dashboard build
+- Python 3.11 or 3.12 inside the worker and backend images
+- A writable runtime data directory
+- A writable ingest directory for documents and Obsidian
 
-Host paths used by this stack:
+Recommended host directories are configured through environment variables:
 
-- `/home/skynet/opt/appdata/memory-hub` for settings, status, worker state, and backups
-- `/home/skynet/data/ingest` for mounted document sources
+- `MEMORY_DATA_DIR` for settings, worker state, backups, and persistent backend volumes
+- `MEMORY_INGEST_DIR` for document source mounts
+- `MEMORY_OBSIDIAN_DIR` for the Obsidian vault source
 
-## Repository layout
+## Bootstrap
 
-```text
-memory-hub/
-  agent-gateway/      Gateway service, tests, and Compose definition
-  dashboard/          SvelteKit dashboard
-  docs-worker/        Document worker
-  email-worker/       Email worker
-  enricher-worker/    Enrichment worker
-  github-worker/      GitHub worker
-  obsidian-worker/    Obsidian worker
-  memorex-cli/        CLI client
+Copy the example environment file and fill in your values:
+
+```bash
+cp .env.example .env
 ```
+
+Then initialize the runtime tree:
+
+```bash
+make init
+```
+
+That creates the expected directory layout and writes default JSON settings if they are missing.
+
+If you want an LLM to do the setup or restore work, start with [LLM_SETUP_PROMPT.md](./LLM_SETUP_PROMPT.md).
+
+## Deploy
+
+The default target brings up the full local stack:
+
+```bash
+make up
+```
+
+By default this enables:
+
+- local Postgres
+- local Ollama
+- local Memorex backend
+- all workers
+- gateway
+- dashboard
+
+If you already have a Memorex backend elsewhere, disable the local backend profile and point the repo at it:
+
+```bash
+LOCAL_BACKEND=0 LOCAL_DB=0 LOCAL_OLLAMA=0 make up
+```
+
+In attach mode, set `MEMORY_BACKEND_URL` to the backend you already run.
+
+## Compose model
+
+The root `compose.yml` is the canonical deployment file.
+
+Profiles:
+
+- `local-db` starts Postgres
+- `local-ollama` starts Ollama
+- `local-backend` starts the Memorex API, migration worker, and backup stager
+
+The ingestion workers, gateway, and dashboard are always defined. They attach to either the local backend or your existing backend URL.
 
 ## Runtime data layout
 
-The stack reads and writes a shared data tree at `/home/skynet/opt/appdata/memory-hub`. Inside the running containers that is mounted at `/app/data/memory-hub`.
+The stack expects the following structure under `MEMORY_DATA_DIR`:
 
-Important files and folders:
+```text
+settings/
+  documents.json
+  email.json
+  obsidian.json
+  github.json
+  enrichment.json
+  secrets.json
+docs-worker/
+email-worker/
+obsidian-worker/
+github-worker/
+enricher-worker/
+status/
+backups/
+postgres/
+ollama/
+```
 
-| Path | Purpose |
-| --- | --- |
-| `settings/documents.json` | Documents worker settings, including `source_paths` |
-| `settings/email.json` | Email worker settings |
-| `settings/obsidian.json` | Obsidian worker settings |
-| `settings/github.json` | GitHub worker settings |
-| `settings/enrichment.json` | Enrichment worker settings |
-| `settings/secrets.json` | Known secret values used by workers and the dashboard |
-| `status/*.json` | Live worker and backup status snapshots |
-| `backups/` | Kopia-side archives and manifest |
-| `docs-worker/state.json` | Documents worker file state |
-| `email-worker/state.json` | Email worker cursor/state |
-| `email-worker/accounts.json` | IMAP account list |
-| `obsidian-worker/state.json` | Obsidian worker state |
-| `github-worker/state.json` | GitHub worker state |
-| `enricher-worker/` | Enrichment worker local state |
+The email worker also uses:
 
-Do not commit the live contents of these files. They are machine-specific.
+- `email-worker/accounts.json`
 
-## Environment files
+The default settings templates in `defaults/` are copied into this tree by `make init`.
 
-Every service directory that needs secrets has an `.env.example` file. Copy it to `.env` locally and fill in your values. The live `.env` files are ignored by git.
+## Default document sources
 
-| File | Variables |
-| --- | --- |
-| `agent-gateway/.env.example` | `MEMORY_BACKEND_TOKEN`, `MEMORY_GATEWAY_TOKEN`, `MEMORY_ADMIN_TOKEN`, `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` |
-| `docs-worker/.env.example` | `AGENTMEMORY_TOKEN` |
-| `email-worker/.env.example` | `AGENTMEMORY_TOKEN` |
-| `enricher-worker/.env.example` | `AGENTMEMORY_TOKEN`, `LLM_API_KEY` |
-| `github-worker/.env.example` | `AGENTMEMORY_TOKEN`, `GITHUB_TOKEN` |
-| `obsidian-worker/.env.example` | `AGENTMEMORY_TOKEN` |
-
-Notes:
-
-- `MEMORY_BACKEND_TOKEN` is the token the gateway uses to authenticate to the Memorex backend.
-- `MEMORY_GATEWAY_TOKEN` is the token used by the dashboard, CLI, and MCP clients against the gateway.
-- `MEMORY_ADMIN_TOKEN` is only for irreversible deletions.
-- `LLM_API_KEY` is the remote provider token used by enrichment.
-- `GITHUB_TOKEN` is the GitHub access token used by GitHub ingestion.
-
-## Services and data flow
-
-### Ingestion workers
-
-The workers are intentionally simple:
-
-- `docs-worker` scans mounted document sources and pushes records into the backend.
-- `email-worker` polls IMAP, extracts message content and attachments, and stores records.
-- `obsidian-worker` walks the vault tree and stores notes.
-- `github-worker` syncs repository and discussion data.
-
-These workers do not talk to agents directly. They write to the backend and keep their own state in JSON files.
-
-### Enrichment worker
-
-The enrichment worker:
-
-1. reads pending items from the backend
-2. calls the remote LLM for summary/enrichment
-3. updates the record back through the backend
-4. causes the backend to regenerate the local embedding with Ollama
-
-The remote LLM is not the vector source of record. It is only used for enrichment text and structured metadata.
-
-### Gateway
-
-The gateway exposes the memory stack to agents. It provides:
-
-- REST recall and browse endpoints
-- memory store/update/archive/forget operations
-- a Streamable HTTP MCP endpoint
-- separate normal and admin auth tokens
-
-The dashboard uses the gateway, not the backend, so browsers never need backend credentials.
-
-### Dashboard
-
-The dashboard is a SvelteKit app built with Skeleton UI. It is meant to be served behind Authentik and accessed by the operator. It provides:
-
-- overview and runtime observability
-- memory recall and memory store
-- lifecycle management
-- worker tuning
-- known secret management
-- email account management
-- Obsidian vault configuration
-- document source management
-- backup manifest visibility
-
-## Current source assumptions
-
-The current document source paths are:
+The default document settings ship with:
 
 - `gdrive`
 - `docs`
 
-Those paths map to directories under `/home/skynet/data/ingest`. The docs worker mounts the ingest root and reads `settings/documents.json` as its configuration file. If you change the source paths, update that JSON file or use the dashboard.
+Those are relative source paths under `MEMORY_INGEST_DIR`.
 
-## Authentication model
+Obsidian uses `MEMORY_OBSIDIAN_DIR` directly.
 
-The stack uses three layers of auth:
+## Ports
 
-1. Authentik protects the dashboard route.
-2. The gateway requires bearer tokens for its REST and MCP endpoints.
-3. The backend token stays inside the internal network and is not sent to browsers or MCP clients.
+The default exposed ports are:
 
-This is the right tradeoff for a personal stack. It is not meant to be exposed to arbitrary third parties.
+- dashboard: `3000`
+- gateway: `3112`
+- backend: `3111`
 
-## Dashboard settings model
+These can be changed with environment variables if needed.
 
-The dashboard settings page is intentionally conservative:
+## Authentication
 
-- only known secrets are exposed
-- worker settings are grouped by task
-- email accounts live with the email worker controls
-- GitHub and document source settings live under source/integration controls
-- Obsidian has its own section because its config shape is different
+There are three distinct trust boundaries:
 
-The stack avoids a free-form secret editor on purpose. If a secret is not explicitly known to the stack, it should not show up in the UI.
+1. The dashboard talks to the gateway, not directly to the backend.
+2. The gateway talks to the backend with its own bearer token.
+3. The backend token never needs to reach the browser.
 
-## Backup model
+The gateway also supports MCP host/origin allowlists for browser-based clients.
 
-Kopia is the backup mechanism used for this stack. The backup job records a manifest under `backups/manifest.json` and stores both the database backup and settings backup artifacts in the app data tree.
+## Backup
 
-What gets backed up:
+The included backup stager captures:
 
-- the database dump
-- the shared settings tree
-- the runtime metadata required to understand the backup set
+- a PostgreSQL dump
+- a snapshot of the settings directory
+- a manifest JSON with filenames and timestamps
 
-## Deployment
+The backup output lands under `MEMORY_DATA_DIR/backups`.
 
-### Dashboard and gateway
+## Restore
 
-```bash
-cd /home/skynet/opt/stacks/memory-hub/agent-gateway
-docker compose up -d --build
-```
+Repo source plus Kopia backups are enough to restore the core service state if the backup repository is still reachable and the secrets/settings snapshot is intact.
 
-This builds and starts:
+That is not the whole disaster-recovery story yet. You still need:
 
-- `memory-agent-gateway`
-- `memory-dashboard`
+- the backup repository itself, stored off the failed host
+- the live `.env` values or an equivalent secrets restore path
+- any reverse-proxy, SSO, DNS, or DDNS configuration you used outside this repo
+- any local source trees under `MEMORY_INGEST_DIR` or `MEMORY_OBSIDIAN_DIR` if those are not re-created from remote systems
+- any worker state files you want to preserve for a clean resume, especially IMAP cursors and file state
 
-### Individual workers
+If your sources are remote, like Gmail, GitHub, or Google Drive, the repo plus the backups are usually enough to get the service back on its feet and let the workers resync. If your documents or Obsidian vault are only local, those trees need to be part of your backup plan as well.
 
-Each worker directory has its own `compose.yml`. Start them the same way from that directory:
+## Where to look first
 
-```bash
-cd /home/skynet/opt/stacks/memory-hub/docs-worker
-docker compose up -d --build
-```
-
-Repeat for `email-worker`, `obsidian-worker`, `github-worker`, and `enricher-worker`.
-
-## Local validation
-
-Useful checks for day-to-day work:
-
-```bash
-cd /home/skynet/opt/stacks/memory-hub/dashboard
-npx svelte-check --tsconfig ./tsconfig.json
-npm run build
-```
-
-```bash
-cd /home/skynet/opt/stacks/memory-hub/agent-gateway
-python3 -m pip install -r requirements-dev.txt
-pytest -q
-```
+- `compose.yml` for the overall stack shape
+- `defaults/` for bootstrap JSON
+- `memorex-api/main.py` for the backend and vector logic
+- `dashboard/src/routes/settings/+page.svelte` for operator controls
+- `agent-gateway/main.py` for the agent API and MCP layer
 
 ## CLI
 
-`memorex-cli` is a small Node.js wrapper around the gateway.
-
-Example:
+`memorex-cli` is a thin wrapper around the gateway REST API:
 
 ```bash
-export MEMOREX_URL=https://agentmemory.stevengerner.com
+export MEMOREX_URL=https://your-memory-domain.example
 export MEMOREX_TOKEN=replace-with-agent-gateway-token
 
-memorex recall "What database migration decisions were made?"
-memorex store "Prefer migration scripts to manual ALTER TABLE changes." \
-  --kind preference --retention durable --agent codex
+memorex recall "What decisions did I make about authentication?"
+memorex store "Prefer migration scripts to manual schema edits." --kind preference --retention durable
 ```
 
-Use `npm pack` before publishing to verify the package contents. Pick an available npm package name before making it public.
+## Validation
 
-## Operational notes
+Useful checks:
 
-- The dashboard is intentionally simple and operator-focused, not a feature-heavy admin suite.
-- Runtime state will change under `opt/appdata/memory-hub`; that is expected.
-- If document source counts show zero, check `settings/documents.json` first.
-- If enrichment is rate limited, the worker will defer rather than hammer the provider.
-- The backend embedding dimension is treated as a stable migration boundary. Do not change it casually.
+```bash
+make ps
+make logs
+```
 
-## Security notes
-
-- Never commit live `.env` files.
-- Never commit live tokens from `settings/secrets.json`.
-- If you expose this repo publicly, rotate any credentials that existed on disk before the repo was created.
-- Keep the gateway and dashboard behind the existing proxy and auth layers.
-
-## Notes on the existing stack
-
-This repository is built on top of a working deployment. It assumes the following services already exist in the larger homelab:
-
-- Caddy
-- Authentik
-- Cloudflare DDNS
-- Ollama
-- the Memorex backend/database stack
-
-The Memory Hub repository does not replace those services. It integrates with them.
-
-## References
-
-- `agentmemory` lifecycle ideas: https://github.com/rohitg00/agentmemory
-- MCP Python SDK: https://github.com/modelcontextprotocol/python-sdk
-- Skeleton UI: https://www.skeleton.dev/
+The repo is intended to be committed and shared as source. It should not contain live `.env` files or runtime data.

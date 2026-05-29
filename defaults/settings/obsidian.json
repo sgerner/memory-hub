@@ -1,0 +1,5 @@
+{
+  "sleep_interval": 60,
+  "content_limit": 100000,
+  "vault_path": ""
+}

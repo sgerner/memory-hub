@@ -248,27 +248,50 @@ class MemoryService:
     async def recall(self, request: MemoryRecall) -> dict[str, Any]:
         categories = request.categories or DEFAULT_CATEGORIES
         candidate_limit = min(100, request.limit * 3)
-        results = await asyncio.gather(
-            *[
-                self.backend.post(
-                    "/search",
-                    {
-                        "query": request.query,
-                        "category": category,
-                        "limit": candidate_limit,
-                        "metadata": request.metadata or None,
-                    },
-                )
-                for category in categories
-            ]
-        )
         combined: list[dict[str, Any]] = []
-        for category, result in zip(categories, results):
+
+        try:
+            result = await self.backend.post(
+                "/search-multi",
+                {
+                    "query": request.query,
+                    "categories": categories,
+                    "limit": candidate_limit,
+                    "metadata": request.metadata or None,
+                },
+            )
             for memory in result.get("results", []):
                 lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
                 if request.include_inactive or lifecycle == "active":
-                    combined.append({"category": category, **memory})
-        combined.sort(key=lambda row: float(row.get("distance", 1)))
+                    combined.append(memory)
+        except HTTPException:
+            results = await asyncio.gather(
+                *[
+                    self.backend.post(
+                        "/search",
+                        {
+                            "query": request.query,
+                            "category": category,
+                            "limit": candidate_limit,
+                            "metadata": request.metadata or None,
+                        },
+                    )
+                    for category in categories
+                ]
+            )
+            for category, result in zip(categories, results):
+                for memory in result.get("results", []):
+                    lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
+                    if request.include_inactive or lifecycle == "active":
+                        combined.append({"category": category, **memory})
+
+        combined.sort(
+            key=lambda row: (
+                -float(row.get("score") or 0),
+                float(row.get("distance") or 99),
+                -float(row.get("lexical_rank") or 0),
+            )
+        )
         return {"results": combined[: request.limit], "searched_categories": categories}
 
     async def list_memories(

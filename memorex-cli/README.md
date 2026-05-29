@@ -4,7 +4,7 @@ Command-line client for the Personal Memory Hub gateway REST API. Node.js 18 or 
 required; there are no runtime dependencies.
 
 ```bash
-export MEMOREX_URL=https://memory.example.com
+export MEMOREX_URL=https://your-memory-domain.example
 export MEMOREX_TOKEN=replace-with-agent-gateway-token
 
 memorex recall "What database migration decisions were made?"

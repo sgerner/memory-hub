@@ -1,0 +1,5 @@
+{
+  "batch_size": 2000,
+  "sleep_interval": 60,
+  "attachment_text_limit": 50000
+}

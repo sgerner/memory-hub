@@ -4,14 +4,14 @@ services:
     container_name: obsidian-worker
     restart: unless-stopped
     environment:
-      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
-      - SLEEP_INTERVAL=60
+      - SLEEP_INTERVAL=${OBSIDIAN_SLEEP_INTERVAL:-60}
     volumes:
-      - /home/skynet/opt/appdata/memory-hub/obsidian-worker:/app/config
-      - /home/skynet/opt/appdata/memory-hub/settings/obsidian.json:/app/config/settings.json:ro
-      - /home/skynet/opt/appdata/memory-hub/status:/app/status
-      - /home/skynet/data/ingest/obsidian:/data/obsidian:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/obsidian-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/obsidian.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+      - ${MEMORY_OBSIDIAN_DIR:?Set MEMORY_OBSIDIAN_DIR in .env}:/data/obsidian:ro
     networks:
       - memory-internal
     labels:
@@ -19,4 +19,4 @@ services:
 
 networks:
   memory-internal:
-    external: true
+    driver: bridge

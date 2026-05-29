@@ -406,7 +406,7 @@
 						<summary class={`flex cursor-pointer items-center justify-between gap-3 list-none ${openClass}`}>
 							<div class="min-w-0">
 								<p class="font-medium text-surface-50">GitHub</p>
-								<p class="text-sm text-surface-400">Set `github_token` in Enrichment</p>
+								<p class="text-sm text-surface-400">Set `github_token` in Secrets</p>
 							</div>
 							<span class="badge preset-tonal-surface">Edit</span>
 						</summary>

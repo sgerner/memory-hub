@@ -4,14 +4,14 @@ services:
     container_name: docs-worker
     restart: unless-stopped
     environment:
-      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
-      - SLEEP_INTERVAL=300
+      - SLEEP_INTERVAL=${DOCS_SLEEP_INTERVAL:-300}
     volumes:
-      - /home/skynet/opt/appdata/memory-hub/docs-worker:/app/config
-      - /home/skynet/opt/appdata/memory-hub/settings/documents.json:/app/config/settings.json:ro
-      - /home/skynet/opt/appdata/memory-hub/status:/app/status
-      - /home/skynet/data/ingest:/data/ingest:ro,rslave
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/docs-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/documents.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+      - ${MEMORY_INGEST_DIR:?Set MEMORY_INGEST_DIR in .env}:/data/ingest:ro,rslave
     networks:
       - memory-internal
     labels:
@@ -19,4 +19,4 @@ services:
 
 networks:
   memory-internal:
-    external: true
+    driver: bridge

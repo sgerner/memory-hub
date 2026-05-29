@@ -17,7 +17,7 @@ SECRETS_PATH = os.getenv("SECRETS_PATH", "/app/shared-settings/secrets.json")
 
 AGENTMEMORY_URL = os.getenv("AGENTMEMORY_URL", "http://agentmemory:3111")
 AGENTMEMORY_TOKEN = os.getenv("AGENTMEMORY_TOKEN")
-GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "sgerner")
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "").strip() or "unknown"
 DEFAULT_SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", "3600"))
 
 SOURCE_EXTENSIONS = {

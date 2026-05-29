@@ -4,14 +4,14 @@ services:
     container_name: email-worker
     restart: unless-stopped
     environment:
-      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
-      - BATCH_SIZE=2000
-      - SLEEP_INTERVAL=60
+      - BATCH_SIZE=${EMAIL_BATCH_SIZE:-2000}
+      - SLEEP_INTERVAL=${EMAIL_SLEEP_INTERVAL:-60}
     volumes:
-      - /home/skynet/opt/appdata/memory-hub/email-worker:/app/config
-      - /home/skynet/opt/appdata/memory-hub/settings/email.json:/app/config/settings.json:ro
-      - /home/skynet/opt/appdata/memory-hub/status:/app/status
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/email-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/email.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
     networks:
       - memory-internal
     labels:
@@ -19,4 +19,4 @@ services:
 
 networks:
   memory-internal:
-    external: true
+    driver: bridge

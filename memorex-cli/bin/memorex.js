@@ -18,7 +18,7 @@ function usage() {
   memorex forget <category> <id> --reason <text> [--agent <name>]
 
 Configuration:
-  MEMOREX_URL       Gateway base URL, for example https://memory.example.com
+  MEMOREX_URL       Gateway base URL, for example https://your-memory-domain.example
   MEMOREX_TOKEN     Agent gateway bearer token
   --url / --token   Overrides the corresponding environment variable`);
 }

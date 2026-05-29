@@ -1,0 +1,5 @@
+{
+  "sleep_interval": 3600,
+  "content_limit": 100000,
+  "issues_per_repo": 50
+}

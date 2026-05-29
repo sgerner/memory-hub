@@ -1,0 +1,79 @@
+services:
+  agentmemory:
+    build: .
+    container_name: agentmemory
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-agentmemory}
+      - POSTGRES_USER=${POSTGRES_USER:-admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - POSTGRES_HOST=${POSTGRES_HOST:-memory-db}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-qwen3-embedding:4b}
+      - EMBEDDING_DIMS=${EMBEDDING_DIMS:-2560}
+      - LEXICAL_INDEX_CATEGORIES=${LEXICAL_INDEX_CATEGORIES:-agent,emails,obsidian,documents}
+      - SEARCH_LEXICAL_TIMEOUT_MS=${SEARCH_LEXICAL_TIMEOUT_MS:-800}
+      - SEARCH_LEXICAL_MAX_CHARS=${SEARCH_LEXICAL_MAX_CHARS:-50000}
+      - EMBED_CACHE_TTL_SECONDS=${EMBED_CACHE_TTL_SECONDS:-3600}
+      - EMBED_CACHE_MAX_ITEMS=${EMBED_CACHE_MAX_ITEMS:-512}
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  migration-worker:
+    build: .
+    container_name: migration-worker
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    command: python migrate_vectors.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_DB=${POSTGRES_DB:-agentmemory}
+      - POSTGRES_USER=${POSTGRES_USER:-admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - POSTGRES_HOST=${POSTGRES_HOST:-memory-db}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-qwen3-embedding:4b}
+      - EMBEDDING_DIMS=${EMBEDDING_DIMS:-2560}
+      - STATUS_PATH=/app/status/migration-worker.json
+    networks:
+      - memory-internal
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  backup-stager:
+    image: postgres:16-alpine
+    container_name: memory-backup-stager
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    environment:
+      - PGHOST=${POSTGRES_HOST:-memory-db}
+      - PGPORT=${POSTGRES_PORT:-5432}
+      - PGDATABASE=${POSTGRES_DB:-agentmemory}
+      - PGUSER=${POSTGRES_USER:-admin}
+      - PGPASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - BACKUP_ROOT=/backups
+      - SETTINGS_SOURCE=/settings
+      - STATUS_PATH=/app/status/backup.json
+      - BACKUP_INTERVAL_SECONDS=${BACKUP_INTERVAL_SECONDS:-21600}
+    command: ["/bin/sh", "/backup.sh"]
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/backups:/backups
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    driver: bridge

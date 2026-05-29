@@ -1,0 +1,5 @@
+{
+  "sleep_interval": 300,
+  "content_limit": 100000,
+  "source_paths": ["gdrive", "docs"]
+}

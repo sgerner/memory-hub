@@ -27,7 +27,7 @@ const secretDefinitions: SecretDefinition[] = [
 		description: 'Used by the main remote summarizer.'
 	},
 	{
-		key: 'nvidia_api_key',
+		key: 'fallback_llm_api_key',
 		label: 'Fallback enrichment token',
 		description: 'Used when the primary provider is rate limited or unavailable.'
 	},

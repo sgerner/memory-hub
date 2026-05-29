@@ -4,16 +4,16 @@ services:
     container_name: github-worker
     restart: unless-stopped
     environment:
-      - AGENTMEMORY_URL=http://agentmemory:3111
+      - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
-      - GITHUB_USERNAME=sgerner
-      - SLEEP_INTERVAL=3600
+      - GITHUB_USERNAME=${GITHUB_USERNAME:?Set GITHUB_USERNAME in .env}
+      - SLEEP_INTERVAL=${GITHUB_SLEEP_INTERVAL:-3600}
       - SECRETS_PATH=/app/shared-settings/secrets.json
     volumes:
-      - /home/skynet/opt/appdata/memory-hub/github-worker:/app/config
-      - /home/skynet/opt/appdata/memory-hub/settings/github.json:/app/config/settings.json:ro
-      - /home/skynet/opt/appdata/memory-hub/settings:/app/shared-settings:ro
-      - /home/skynet/opt/appdata/memory-hub/status:/app/status
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/github-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/github.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
     networks:
       - memory-internal
     labels:
@@ -21,4 +21,4 @@ services:
 
 networks:
   memory-internal:
-    external: true
+    driver: bridge

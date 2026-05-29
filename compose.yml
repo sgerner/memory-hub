@@ -1,0 +1,262 @@
+services:
+  memory-db:
+    image: postgres:16-alpine
+    container_name: memory-db
+    profiles: ["local-db"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentmemory}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/postgres:/var/lib/postgresql/data
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["local-ollama"]
+    restart: unless-stopped
+    command: ["serve"]
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/ollama:/root/.ollama
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  agentmemory:
+    build: ./memorex-api
+    container_name: agentmemory
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentmemory}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: ${POSTGRES_HOST:-memory-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen3-embedding:4b}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-2560}
+      VECTOR_INDEX_EF_SEARCH: ${VECTOR_INDEX_EF_SEARCH:-100}
+      LEXICAL_INDEX_CATEGORIES: ${LEXICAL_INDEX_CATEGORIES:-agent,emails,obsidian,documents}
+      SEARCH_LEXICAL_TIMEOUT_MS: ${SEARCH_LEXICAL_TIMEOUT_MS:-800}
+      SEARCH_LEXICAL_MAX_CHARS: ${SEARCH_LEXICAL_MAX_CHARS:-50000}
+      EMBED_CACHE_TTL_SECONDS: ${EMBED_CACHE_TTL_SECONDS:-3600}
+      EMBED_CACHE_MAX_ITEMS: ${EMBED_CACHE_MAX_ITEMS:-512}
+      MEMORY_CATEGORIES: ${MEMORY_CATEGORIES:-agent,emails,obsidian,documents,code}
+    ports:
+      - "${AGENTMEMORY_PORT:-3111}:3111"
+    depends_on:
+      - memory-db
+      - ollama
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  migration-worker:
+    build: ./memorex-api
+    container_name: migration-worker
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    command: python migrate_vectors.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      POSTGRES_DB: ${POSTGRES_DB:-agentmemory}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: ${POSTGRES_HOST:-memory-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen3-embedding:4b}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-2560}
+      EMBED_CHUNK_SIZE: ${EMBED_CHUNK_SIZE:-1500}
+      EMBED_CHUNK_OVERLAP: ${EMBED_CHUNK_OVERLAP:-150}
+      EMBED_RETRY_MIN_CHUNK: ${EMBED_RETRY_MIN_CHUNK:-256}
+      STATUS_PATH: /app/status/migration-worker.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    depends_on:
+      - agentmemory
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  backup-stager:
+    image: postgres:16-alpine
+    container_name: memory-backup-stager
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    environment:
+      PGHOST: ${POSTGRES_HOST:-memory-db}
+      PGPORT: ${POSTGRES_PORT:-5432}
+      PGDATABASE: ${POSTGRES_DB:-agentmemory}
+      PGUSER: ${POSTGRES_USER:-admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      BACKUP_ROOT: /backups
+      SETTINGS_SOURCE: /settings
+      STATUS_PATH: /app/status/backup.json
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-21600}
+    command: ["/bin/sh", "/backup.sh"]
+    volumes:
+      - ./memorex-api/backup.sh:/backup.sh:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/backups:/backups
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    depends_on:
+      - memory-db
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  memory-agent-gateway:
+    build: ./agent-gateway
+    container_name: memory-agent-gateway
+    restart: unless-stopped
+    environment:
+      MEMORY_BACKEND_URL: ${MEMORY_BACKEND_URL:-http://agentmemory:3111}
+      MEMORY_BACKEND_TOKEN: ${MEMORY_BACKEND_TOKEN:?Set MEMORY_BACKEND_TOKEN in .env}
+      MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
+      MEMORY_ADMIN_TOKEN: ${MEMORY_ADMIN_TOKEN:?Set MEMORY_ADMIN_TOKEN in .env}
+      MEMORY_CATEGORIES: ${MEMORY_CATEGORIES:-agent,emails,obsidian,documents,code}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1:*,localhost:*,memory-agent-gateway:*}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    ports:
+      - "${GATEWAY_PORT:-3112}:3112"
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  memory-dashboard:
+    build: ./dashboard
+    container_name: memory-dashboard
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      MEMORY_GATEWAY_URL: ${MEMORY_GATEWAY_URL:-http://memory-agent-gateway:3112}
+      MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
+      MEMORY_HUB_DATA_DIR: /app/data/memory-hub
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}:/app/data/memory-hub
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    depends_on:
+      - memory-agent-gateway
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  docs-worker:
+    build: ./docs-worker
+    container_name: docs-worker
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      SLEEP_INTERVAL: ${DOCS_SLEEP_INTERVAL:-300}
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/docs-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/documents.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+      - ${MEMORY_INGEST_DIR:?Set MEMORY_INGEST_DIR in .env}:/data/ingest:ro,rslave
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  email-worker:
+    build: ./email-worker
+    container_name: email-worker
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      BATCH_SIZE: ${EMAIL_BATCH_SIZE:-2000}
+      SLEEP_INTERVAL: ${EMAIL_SLEEP_INTERVAL:-60}
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/email-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/email.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  obsidian-worker:
+    build: ./obsidian-worker
+    container_name: obsidian-worker
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      SLEEP_INTERVAL: ${OBSIDIAN_SLEEP_INTERVAL:-60}
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/obsidian-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/obsidian.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+      - ${MEMORY_OBSIDIAN_DIR:?Set MEMORY_OBSIDIAN_DIR in .env}:/data/obsidian:ro
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  github-worker:
+    build: ./github-worker
+    container_name: github-worker
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      GITHUB_USERNAME: ${GITHUB_USERNAME:?Set GITHUB_USERNAME in .env}
+      SLEEP_INTERVAL: ${GITHUB_SLEEP_INTERVAL:-3600}
+      SECRETS_PATH: /app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/github-worker:/app/config
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/github.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  enricher-worker:
+    build: ./enricher-worker
+    container_name: enricher-worker
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}
+      LLM_FREE_BASE_URL: ${LLM_FREE_BASE_URL:-https://opencode.ai/zen/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+      ENRICH_BATCH_SIZE: ${ENRICH_BATCH_SIZE:-100}
+      ENRICH_SLEEP_INTERVAL: ${ENRICH_SLEEP_INTERVAL:-10}
+      ENRICH_CONCURRENCY: ${ENRICH_CONCURRENCY:-50}
+      ENRICH_FALLBACK_RPM_CAP: ${ENRICH_FALLBACK_RPM_CAP:-4}
+      SECRETS_PATH: /app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  memory-internal:
+    driver: bridge

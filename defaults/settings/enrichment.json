@@ -1,0 +1,11 @@
+{
+  "batch_size": 100,
+  "sleep_interval": 10,
+  "concurrency": 50,
+  "text_limit": 8000,
+  "email_model": "deepseek-v4-flash",
+  "email_fallback_model": "deepseek-v4-flash-free",
+  "knowledge_model": "deepseek-v4-flash",
+  "knowledge_fallback_model": "deepseek-v4-flash-free",
+  "fallback_requests_per_minute": 4
+}
