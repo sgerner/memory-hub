@@ -203,6 +203,7 @@ The included backup stager captures:
 - a manifest JSON with filenames and timestamps
 
 The backup output lands under `MEMORY_DATA_DIR/backups`.
+It runs on a daily cadence, keeps only the newest complete backup for each day, and prunes to a 7-day retention window by default.
 
 ## Restore
 

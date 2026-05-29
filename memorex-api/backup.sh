@@ -5,13 +5,22 @@ BACKUP_ROOT="${BACKUP_ROOT:-/backups}"
 SETTINGS_SOURCE="${SETTINGS_SOURCE:-/settings}"
 STATUS_PATH="${STATUS_PATH:-/app/status/backup.json}"
 MANIFEST_PATH="${MANIFEST_PATH:-$BACKUP_ROOT/manifest.json}"
-INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-21600}"
+INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-86400}"
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 PGHOST="${PGHOST:-memory-db}"
 PGPORT="${PGPORT:-5432}"
 PGDATABASE="${PGDATABASE:-agentmemory}"
 PGUSER="${PGUSER:-admin}"
 
 export PGPASSWORD="${PGPASSWORD:?PGPASSWORD is required}"
+
+case "$INTERVAL_SECONDS" in
+  ''|*[!0-9]*)
+    INTERVAL_SECONDS=86400
+    ;;
+esac
+
+[ "$INTERVAL_SECONDS" -lt 86400 ] && INTERVAL_SECONDS=86400
 
 mkdir -p "$BACKUP_ROOT" "$(dirname "$STATUS_PATH")"
 
@@ -47,6 +56,70 @@ json_string() {
   printf '"%s"' "$1"
 }
 
+timestamp_from_backup_name() {
+  name="$1"
+  case "$name" in
+    agentmemory-db-*.sql.gz)
+      ts="${name#agentmemory-db-}"
+      printf '%s\n' "${ts%.sql.gz}"
+      ;;
+    memory-hub-settings-*.tar.gz)
+      ts="${name#memory-hub-settings-}"
+      printf '%s\n' "${ts%.tar.gz}"
+      ;;
+  esac
+}
+
+prune_backups() {
+  [ "$RETENTION_DAYS" -gt 0 ] || return 0
+
+  db_list="$(mktemp "$BACKUP_ROOT/.backup-db-list.XXXXXX")"
+  keep_list="$(mktemp "$BACKUP_ROOT/.backup-keep-list.XXXXXX")"
+  all_list="$(mktemp "$BACKUP_ROOT/.backup-all-list.XXXXXX")"
+  keep_list_tmp="$keep_list.tmp"
+  trap 'rm -f "$db_list" "$keep_list" "$keep_list_tmp" "$all_list"' EXIT INT TERM
+
+  find "$BACKUP_ROOT" -maxdepth 1 -type f -name 'agentmemory-db-*.sql.gz' -print | sort > "$db_list"
+
+  : > "$keep_list"
+  current_day=""
+  current_ts=""
+
+  while IFS= read -r db_file; do
+    base="${db_file##*/}"
+    ts="$(timestamp_from_backup_name "$base")" || continue
+    [ -n "$ts" ] || continue
+    day="${ts%%T*}"
+    settings_file="$BACKUP_ROOT/memory-hub-settings-$ts.tar.gz"
+
+    [ -f "$settings_file" ] || continue
+
+    if [ "$day" != "$current_day" ] && [ -n "$current_ts" ]; then
+      printf '%s\n' "$current_ts" >> "$keep_list"
+    fi
+    current_day="$day"
+    current_ts="$ts"
+  done < "$db_list"
+
+  [ -n "$current_ts" ] && printf '%s\n' "$current_ts" >> "$keep_list"
+  sort -u "$keep_list" | tail -n "$RETENTION_DAYS" > "$keep_list_tmp"
+  mv "$keep_list_tmp" "$keep_list"
+
+  find "$BACKUP_ROOT" -maxdepth 1 -type f \( -name 'agentmemory-db-*.sql.gz' -o -name 'memory-hub-settings-*.tar.gz' \) -print | sort > "$all_list"
+
+  while IFS= read -r file; do
+    base="${file##*/}"
+    ts="$(timestamp_from_backup_name "$base")" || continue
+    [ -n "$ts" ] || continue
+    if ! grep -Fxq "$ts" "$keep_list"; then
+      rm -f "$BACKUP_ROOT/agentmemory-db-$ts.sql.gz" "$BACKUP_ROOT/memory-hub-settings-$ts.tar.gz"
+    fi
+  done < "$all_list"
+
+  rm -f "$db_list" "$keep_list" "$keep_list_tmp" "$all_list"
+  trap - EXIT INT TERM
+}
+
 while true; do
   started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -79,6 +152,7 @@ EOF
       mv "$manifest_tmp" "$MANIFEST_PATH"
       last_success_at=$(json_string "$finished_at")
       write_status "idle" "$started_at" "$finished_at" "$last_success_at" null "$db_name_json" "$settings_name_json"
+      prune_backups
       sleep "$INTERVAL_SECONDS"
       continue
     fi
