@@ -80,6 +80,16 @@ ALLOWED_CATEGORIES = {
     if item.strip()
 }
 SAFE_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+INTERNAL_METADATA_KEYS = [
+    "embedding_source_text",
+    "embedding_status",
+    "embedding_queued_at",
+    "embedding_started_at",
+    "embedding_finished_at",
+    "embedding_available_at",
+    "embedding_attempts",
+    "embedding_error",
+]
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -316,12 +326,23 @@ def existing_columns(cur, table_name: str) -> set[str]:
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (table_name,))
     return {row["column_name"] for row in cur.fetchall()}
 
+def metadata_projection(alias: str = "t") -> str:
+    excluded = ["id", "document", "embedding", *INTERNAL_METADATA_KEYS]
+    quoted = ", ".join(f"'{item}'" for item in excluded)
+    return f"to_jsonb({alias}) - ARRAY[{quoted}] AS metadata"
+
+def safe_metadata_key(key: str) -> Optional[str]:
+    safe_key = "".join([char for char in key if char.isalnum() or char == "_"]).lower()
+    if not safe_key or safe_key in INTERNAL_METADATA_KEYS or safe_key in {"id", "document", "embedding"}:
+        return None
+    return safe_key
+
 def build_metadata_where(metadata: Optional[Dict[str, Any]], existing_cols: set[str], alias: str = "t") -> tuple[str, list[str]]:
     where_clauses = []
     where_vals = []
     if metadata:
         for key, value in metadata.items():
-            safe_key = "".join([char for char in key if char.isalnum() or char == "_"]).lower()
+            safe_key = safe_metadata_key(key)
             if safe_key in existing_cols:
                 where_clauses.append(f"{alias}.{safe_key} = %s")
                 where_vals.append(str(value))
@@ -404,7 +425,7 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         SELECT id, document,
                embedding::halfvec({EMBEDDING_DIMS}) <=> CAST(%s AS halfvec({EMBEDDING_DIMS})) AS distance,
                0.0::double precision AS lexical_rank,
-               to_jsonb(t) - ARRAY['id', 'document', 'embedding'] AS metadata
+               {metadata_projection('t')}
         FROM {table_name} t
         {where_sql}
         ORDER BY distance ASC
@@ -435,7 +456,7 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         SELECT id, document,
                NULL::double precision AS distance,
                ts_rank_cd(to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS})), to_tsquery('simple', %s)) AS lexical_rank,
-               to_jsonb(t) - ARRAY['id', 'document', 'embedding'] AS metadata
+               {metadata_projection('t')}
         FROM {table_name} t
         {where_sql}
         {"AND" if where_sql else "WHERE"} to_tsquery('simple', %s) @@ to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS}))
@@ -472,10 +493,25 @@ def _ensure_table(conn, category: str, metadata: Dict[str, Any]):
         # Check existing columns
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (table_name,))
         existing_cols = {row['column_name'] for row in cur.fetchall()}
+
+        control_columns = {
+            "embedding_source_text": "TEXT",
+            "embedding_status": "TEXT",
+            "embedding_queued_at": "TEXT",
+            "embedding_started_at": "TEXT",
+            "embedding_finished_at": "TEXT",
+            "embedding_available_at": "TEXT",
+            "embedding_attempts": "INTEGER DEFAULT 0",
+            "embedding_error": "TEXT",
+        }
+        for column_name, column_type in control_columns.items():
+            if column_name not in existing_cols:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+                existing_cols.add(column_name)
         
         # Add missing columns
         for key in metadata.keys():
-            safe_key = "".join([c for c in key if c.isalnum() or c == '_']).lower()
+            safe_key = safe_metadata_key(key)
             if safe_key and safe_key not in existing_cols:
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {safe_key} TEXT")
                 existing_cols.add(safe_key)
@@ -501,11 +537,9 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
         embedding_source = resolve_embedding_source(data.content, data.embedding_text)
         if not embedding_source:
             raise Exception("No embedding source provided.")
-        emb = get_embedding(embedding_source)
-        if not emb:
-            raise Exception("Failed to generate local CPU embedding.")
-            
-        emb_str = f"[{','.join(map(str, emb))}]"
+        embedding_source_override = sanitize(data.embedding_text) if data.embedding_text is not None else None
+        if embedding_source_override == clean_content:
+            embedding_source_override = None
         now_str = str(time.time())
         metadata = data.metadata or {}
         
@@ -513,11 +547,37 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
             _ensure_table(conn, data.category, metadata)
             table_name = table_for(data.category)
             
-            cols = ["document", "embedding", "created_at", "updated_at"]
-            vals = [clean_content, emb_str, now_str, now_str]
+            cols = [
+                "document",
+                "embedding",
+                "embedding_source_text",
+                "created_at",
+                "updated_at",
+                "embedding_status",
+                "embedding_queued_at",
+                "embedding_started_at",
+                "embedding_finished_at",
+                "embedding_available_at",
+                "embedding_attempts",
+                "embedding_error",
+            ]
+            vals = [
+                clean_content,
+                None,
+                embedding_source_override,
+                now_str,
+                now_str,
+                "pending",
+                now_str,
+                None,
+                None,
+                now_str,
+                0,
+                None,
+            ]
             
             for k, v in metadata.items():
-                safe_key = "".join([c for c in k if c.isalnum() or c == '_']).lower()
+                safe_key = safe_metadata_key(k)
                 if safe_key:
                     cols.append(safe_key)
                     vals.append(sanitize(str(v)))
@@ -627,7 +687,7 @@ def get_memories_endpoint(category: str, limit: int = 50, needs_enrichment: Opti
                         where_vals = [needs_enrichment]
                 
                 query = f"""SELECT id, document,
-                             to_jsonb(t) - ARRAY['id', 'document', 'embedding'] AS metadata
+                             {metadata_projection('t')}
                              FROM {table_name} t {where_sql} ORDER BY id DESC LIMIT %s"""
                 cur.execute(query, where_vals + [limit])
                 rows = cur.fetchall()
@@ -657,22 +717,37 @@ def update(data: MemoryUpdate, token: str = Depends(verify_token)):
             
             set_clauses = ["updated_at = %s"]
             set_vals = [str(time.time())]
+            needs_embedding_refresh = False
             
             if data.content is not None:
                 clean_content = sanitize(data.content)
                 set_clauses.append("document = %s")
                 set_vals.append(clean_content)
+                needs_embedding_refresh = True
 
             embedding_source = resolve_embedding_source(data.content, data.embedding_text)
             if embedding_source is not None:
-                embedding = get_embedding(embedding_source)
-                if not embedding:
-                    raise Exception("Failed to generate embedding for updated content")
-                set_clauses.append("embedding = %s")
-                set_vals.append(f"[{','.join(map(str, embedding))}]")
+                needs_embedding_refresh = True
+                now_str = str(time.time())
+                embedding_source_override = sanitize(data.embedding_text) if data.embedding_text is not None else None
+                if embedding_source_override == data.content:
+                    embedding_source_override = None
+                set_clauses.extend(
+                    [
+                        "embedding_status = %s",
+                        "embedding_source_text = %s",
+                        "embedding_queued_at = %s",
+                        "embedding_started_at = %s",
+                        "embedding_finished_at = %s",
+                        "embedding_available_at = %s",
+                        "embedding_attempts = %s",
+                        "embedding_error = %s",
+                    ]
+                )
+                set_vals.extend(["pending", embedding_source_override, now_str, None, None, now_str, 0, None])
                 
             for k, v in metadata.items():
-                safe_key = "".join([c for c in k if c.isalnum() or c == '_']).lower()
+                safe_key = safe_metadata_key(k)
                 if safe_key:
                     set_clauses.append(f"{safe_key} = %s")
                     set_vals.append(sanitize(str(v)))
@@ -684,7 +759,7 @@ def update(data: MemoryUpdate, token: str = Depends(verify_token)):
                 cur.execute(f"UPDATE {table_name} SET {set_sql} WHERE id = %s", set_vals)
             conn.commit()
             
-        return {"success": True}
+        return {"success": True, "embedding_queued": needs_embedding_refresh}
     except Exception as e:
         logger.error(f"Error in /update: {e}")
         logger.error(traceback.format_exc())

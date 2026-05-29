@@ -7,6 +7,7 @@ services:
       - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
       - GITHUB_USERNAME=${GITHUB_USERNAME:?Set GITHUB_USERNAME in .env}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - SLEEP_INTERVAL=${GITHUB_SLEEP_INTERVAL:-3600}
       - SECRETS_PATH=/app/shared-settings/secrets.json
     volumes:

@@ -23,11 +23,21 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3-embedding:4b")
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/migration-worker.json")
 
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
-CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "4"))
+CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "1"))
 STATUS_UPDATE_EVERY = int(os.getenv("MIGRATION_STATUS_UPDATE_EVERY", "1"))
 EMBED_CHUNK_SIZE = int(os.getenv("EMBED_CHUNK_SIZE", "1500"))
 EMBED_CHUNK_OVERLAP = int(os.getenv("EMBED_CHUNK_OVERLAP", "150"))
 EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
+INTERNAL_CONTROL_COLUMNS = {
+    "embedding_source_text": "TEXT",
+    "embedding_status": "TEXT",
+    "embedding_queued_at": "TEXT",
+    "embedding_started_at": "TEXT",
+    "embedding_finished_at": "TEXT",
+    "embedding_available_at": "TEXT",
+    "embedding_attempts": "INTEGER DEFAULT 0",
+    "embedding_error": "TEXT",
+}
 
 
 def utc_now():
@@ -51,6 +61,17 @@ def get_db_connection():
         port=POSTGRES_PORT,
         cursor_factory=RealDictCursor,
     )
+
+
+def ensure_tracking_columns(conn, table_name: str):
+    with conn.cursor() as cur:
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (table_name,))
+        existing = {row["column_name"] for row in cur.fetchall()}
+        for column_name, column_type in INTERNAL_CONTROL_COLUMNS.items():
+            if column_name not in existing:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+                existing.add(column_name)
+    conn.commit()
 
 
 def split_embedding_text(text: str, chunk_size: int = EMBED_CHUNK_SIZE, overlap: int = EMBED_CHUNK_OVERLAP) -> List[str]:
@@ -157,14 +178,45 @@ async def get_embedding(session, text):
         return None
 
 
-async def process_row(session, table_name, row, conn):
-    emb = await get_embedding(session, row['document'])
+async def process_row(session, table_name, row, conn, db_lock):
+    embedding_text = row.get("embedding_source_text") or row["document"]
+    emb = await get_embedding(session, embedding_text)
+    now_str = str(time.time())
     if emb:
         emb_str = f"[{','.join(map(str, emb))}]"
-        with conn.cursor() as cur:
-            cur.execute(f"UPDATE {table_name} SET embedding = %s WHERE id = %s", (emb_str, row['id']))
-        conn.commit()
+        async with db_lock:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {table_name}
+                    SET embedding = %s,
+                        embedding_status = 'done',
+                        embedding_finished_at = %s,
+                        embedding_error = NULL,
+                        embedding_available_at = NULL
+                    WHERE id = %s
+                    """,
+                    (emb_str, now_str, row["id"]),
+                )
+            conn.commit()
         return True
+
+    failure_message = "Failed to generate embedding."
+    retry_after = str(time.time() + min(3600, max(60, 30 * max(1, int(row.get("embedding_attempts") or 1)))))
+    async with db_lock:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {table_name}
+                SET embedding_status = 'retry',
+                    embedding_error = %s,
+                    embedding_available_at = %s,
+                    embedding_finished_at = %s
+                WHERE id = %s
+                """,
+                (failure_message, retry_after, now_str, row["id"]),
+            )
+        conn.commit()
     return False
 
 
@@ -175,7 +227,36 @@ async def migrate_table(category):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as count FROM {table_name} WHERE embedding IS NULL")
+            cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
+            if not cur.fetchone()["to_regclass"]:
+                save_status(
+                    {
+                        "service": "migration-worker",
+                        "status": "idle",
+                        "current_table": table_name,
+                        "items_total": 0,
+                        "items_processed": 0,
+                        "items_remaining": 0,
+                        "updated_at": utc_now(),
+                    }
+                )
+                return 0
+
+        ensure_tracking_columns(conn, table_name)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) as count
+                FROM {table_name}
+                WHERE embedding IS NULL
+                   OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
+                   OR (
+                       embedding_status = 'processing'
+                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                   )
+                """
+            )
             total_todo = cur.fetchone()['count']
             print(f"Found {total_todo} records needing embeddings.")
 
@@ -192,13 +273,63 @@ async def migrate_table(category):
                         "updated_at": utc_now(),
                     }
                 )
-                return
+                return 0
 
+            started_at = str(time.time())
             cur.execute(
-                f"SELECT id, document FROM {table_name} WHERE embedding IS NULL ORDER BY id ASC LIMIT %s",
-                (min(BATCH_SIZE, total_todo),),
+                f"""
+                WITH claimed AS (
+                    SELECT id, document, embedding_source_text
+                    FROM {table_name}
+                    WHERE (
+                        embedding IS NULL
+                        OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
+                        OR (
+                            embedding_status = 'processing'
+                            AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                        )
+                    )
+                      AND CAST(COALESCE(NULLIF(embedding_available_at, ''), '0') AS DOUBLE PRECISION) <= EXTRACT(EPOCH FROM NOW())
+                    ORDER BY id ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                )
+                UPDATE {table_name} t
+                SET embedding_status = 'processing',
+                    embedding_started_at = %s,
+                    embedding_attempts = COALESCE(embedding_attempts, 0) + 1,
+                    embedding_error = NULL
+                FROM claimed
+                WHERE t.id = claimed.id
+                RETURNING t.id,
+                          claimed.document,
+                          claimed.embedding_source_text,
+                          COALESCE(t.embedding_attempts, 0) AS embedding_attempts
+                """,
+                (min(BATCH_SIZE, total_todo), started_at),
             )
             rows = cur.fetchall()
+            conn.commit()
+
+        if not rows:
+            save_status(
+                {
+                    "service": "migration-worker",
+                    "status": "waiting",
+                    "current_table": table_name,
+                    "items_total": total_todo,
+                    "items_processed": 0,
+                    "items_remaining": total_todo,
+                    "updated_at": utc_now(),
+                    "details": {
+                        "batch_size": 0,
+                        "concurrency": CONCURRENCY,
+                        "completed_in_batch": 0,
+                        "successful_in_batch": 0,
+                    },
+                }
+            )
+            return 0
 
         save_status(
             {
@@ -223,13 +354,14 @@ async def migrate_table(category):
         async with aiohttp.ClientSession() as session:
             semaphore = asyncio.Semaphore(CONCURRENCY)
             status_lock = asyncio.Lock()
+            db_lock = asyncio.Lock()
             completed_in_batch = 0
             successful_in_batch = 0
 
             async def throttled_process(row):
                 nonlocal completed_in_batch, successful_in_batch
                 async with semaphore:
-                    result = await process_row(session, table_name, row, conn)
+                    result = await process_row(session, table_name, row, conn, db_lock)
 
                 async with status_lock:
                     completed_in_batch += 1
@@ -267,8 +399,8 @@ async def migrate_table(category):
                     "status": "running",
                     "current_table": table_name,
                     "items_total": total_todo,
-                    "items_processed": success_count,
-                    "items_remaining": max(0, total_todo - success_count),
+                    "items_processed": total_todo - len(rows) + success_count,
+                    "items_remaining": max(0, total_todo - (total_todo - len(rows) + success_count)),
                     "last_success_at": utc_now() if success_count else None,
                     "updated_at": utc_now(),
                     "details": {
@@ -316,14 +448,36 @@ async def main():
             total_processed += await migrate_table(category)
 
         any_left = False
+        due_left = False
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
                 for category in categories:
-                    cur.execute(f"SELECT COUNT(*) as count FROM memory_{category} WHERE embedding IS NULL")
-                    if cur.fetchone()['count'] > 0:
+                    table_name = f"memory_{category}"
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
+                    if not cur.fetchone()["to_regclass"]:
+                        continue
+                    cur.execute(
+                        f"""
+                        SELECT
+                            COUNT(*) AS total_count,
+                            COUNT(*) FILTER (
+                                WHERE CAST(COALESCE(NULLIF(embedding_available_at, ''), '0') AS DOUBLE PRECISION) <= EXTRACT(EPOCH FROM NOW())
+                                   OR (
+                                       embedding_status = 'processing'
+                                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                                   )
+                            ) AS due_count
+                        FROM {table_name}
+                        WHERE embedding IS NULL
+                           OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry', 'processing')
+                        """
+                    )
+                    counts = cur.fetchone()
+                    if counts["total_count"] > 0:
                         any_left = True
-                        break
+                    if counts["due_count"] > 0:
+                        due_left = True
         finally:
             conn.close()
 
@@ -343,7 +497,8 @@ async def main():
             )
             break
 
-        print("Completed a cycle. Starting next batch in 5s...")
+        sleep_seconds = 5 if due_left else 30
+        print(f"Completed a cycle. Starting next batch in {sleep_seconds}s...")
         save_status(
             {
                 "service": "migration-worker",
@@ -354,7 +509,7 @@ async def main():
                 "updated_at": utc_now(),
             }
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
