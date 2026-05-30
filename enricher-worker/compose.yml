@@ -13,9 +13,8 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_FALLBACK_API_KEY=${LLM_FALLBACK_API_KEY:-}
       - ENRICH_BATCH_SIZE=${ENRICH_BATCH_SIZE:-100}
-      - ENRICH_SLEEP_INTERVAL=${ENRICH_SLEEP_INTERVAL:-10}
       - ENRICH_CONCURRENCY=${ENRICH_CONCURRENCY:-50}
-      - ENRICH_FALLBACK_RPM_CAP=${ENRICH_FALLBACK_RPM_CAP:-4}
+      - GEMINI_CONCURRENCY=${GEMINI_CONCURRENCY:-8}
       - SECRETS_PATH=/app/shared-settings/secrets.json
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro

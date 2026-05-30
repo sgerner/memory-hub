@@ -4,7 +4,7 @@
 
 	const nav = [
 		{ href: '/', label: 'Overview', hint: 'Memory activity and recent records' },
-		{ href: '/settings', label: 'Settings', hint: 'Secrets, sources, worker controls' }
+		{ href: '/settings', label: 'Settings', hint: 'Enrichment, sources, worker controls' }
 	];
 </script>
 

@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 
 import { loadBackupManifest } from '$lib/server/observability';
+import { browseDirectory } from '$lib/server/filesystem-browser';
 import { deleteSecret, readSecretsMap, saveSecret } from '$lib/server/secrets';
 import {
 	loadDocumentSettings,
@@ -11,7 +12,12 @@ import {
 	saveObsidianSettings
 } from '$lib/server/worker-config';
 import { getWorkerSettings, updateWorkerSettings } from '$lib/server/worker-settings';
-import { sanitizeRelativePath, validateSecretKey } from '$lib/server/memory-hub';
+import {
+	memoryIngestDir,
+	memoryObsidianDir,
+	sanitizeRelativePath,
+	validateSecretKey
+} from '$lib/server/memory-hub';
 import type { Actions, PageServerLoad } from './$types';
 
 type SecretDefinition = {
@@ -20,7 +26,7 @@ type SecretDefinition = {
 	description: string;
 };
 
-const secretDefinitions: SecretDefinition[] = [
+const enrichmentSecretDefinitions: SecretDefinition[] = [
 	{
 		key: 'llm_api_key',
 		label: 'Primary enrichment token',
@@ -30,7 +36,10 @@ const secretDefinitions: SecretDefinition[] = [
 		key: 'fallback_llm_api_key',
 		label: 'Fallback enrichment token',
 		description: 'Used when the primary provider is rate limited or unavailable.'
-	},
+	}
+];
+
+const sourceSecretDefinitions: SecretDefinition[] = [
 	{
 		key: 'github_token',
 		label: 'GitHub access token',
@@ -38,9 +47,13 @@ const secretDefinitions: SecretDefinition[] = [
 	}
 ];
 
-const secretKeys = new Set(secretDefinitions.map((definition) => definition.key));
+const secretKeys = new Set(
+	[...enrichmentSecretDefinitions, ...sourceSecretDefinitions].map((definition) => definition.key)
+);
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ url }) => {
+	const docsPath = url.searchParams.get('docs_path') ?? '';
+	const obsidianPath = url.searchParams.get('obsidian_path') ?? '';
 	const [
 		workerSettings,
 		secrets,
@@ -56,17 +69,37 @@ export const load: PageServerLoad = async () => {
 		loadObsidianSettings(),
 		loadBackupManifest()
 	]);
+	const documentBrowser = await browseDirectory({
+		label: 'Documents',
+		rootPath: memoryIngestDir,
+		currentPath: docsPath || documentSettings.source_paths[0] || '',
+		url,
+		queryKey: 'docs_path'
+	});
+	const obsidianBrowser = await browseDirectory({
+		label: 'Obsidian',
+		rootPath: memoryObsidianDir,
+		currentPath: obsidianPath || obsidianSettings.vault_path,
+		url,
+		queryKey: 'obsidian_path'
+	});
 
 	return {
 		workerSettings,
-		secretDefinitions: secretDefinitions.map((definition) => ({
+		enrichmentSecretDefinitions: enrichmentSecretDefinitions.map((definition) => ({
+			...definition,
+			configured: Boolean(secrets[definition.key])
+		})),
+		sourceSecretDefinitions: sourceSecretDefinitions.map((definition) => ({
 			...definition,
 			configured: Boolean(secrets[definition.key])
 		})),
 		emailAccounts,
 		documentSettings,
 		obsidianSettings,
-		backupManifest
+		backupManifest,
+		documentBrowser,
+		obsidianBrowser
 	};
 };
 

@@ -54,6 +54,12 @@
 		return messages.join(' • ');
 	};
 
+	const shorten = (value: string, max = 84) => {
+		const clean = value.replace(/\s+/g, ' ').trim();
+		if (clean.length <= max) return clean;
+		return `${clean.slice(0, max - 1)}…`;
+	};
+
 	const runtimeDotTone = (status: string) => {
 		if (status === 'running' || status === 'healthy' || status === 'ok' || status === 'busy') return 'bg-success-400';
 		if (status === 'degraded' || status === 'queued' || status === 'deferred') return 'bg-warning-400';
@@ -75,6 +81,13 @@
 		if (rawStatus === 'stalled') return 'Stalled and needs attention.';
 		if (rawStatus === 'unknown') return 'Status unavailable.';
 		return `Status: ${rawStatus}`;
+	};
+
+	const runtimeStatusTone = (status: string) => {
+		if (status === 'running' || status === 'healthy' || status === 'ok' || status === 'busy') return 'preset-tonal-success';
+		if (status === 'deferred' || status === 'queued' || status === 'degraded') return 'preset-tonal-warning';
+		if (status === 'idle' || status === 'unknown') return 'preset-tonal-surface';
+		return 'preset-tonal-error';
 	};
 </script>
 
@@ -101,19 +114,20 @@
 				<div class="chip preset-tonal-surface">No worker signals yet</div>
 			{:else}
 				{#each data.observability as entry (entry.label)}
-					<article class="py-1" transition:fly={{ y: 8, duration: 180 }}>
-						<div class="flex items-start gap-2">
+					<article class="border border-white/10 bg-black/20 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)_inset]" transition:fly={{ y: 8, duration: 180 }}>
+						<div class="flex flex-wrap items-center gap-x-3 gap-y-2">
 							<span
-								class={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full animate-pulse ${runtimeDotTone(entry.data?.status ?? 'unknown')}`}
+								class={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${runtimeDotTone(entry.data?.status ?? 'unknown')}`}
 								aria-hidden="true"
 							></span>
-							<div class="min-w-0">
-								<p class="text-sm font-medium text-surface-100">{entry.label.replace(/\s*worker$/i, '')}</p>
-								{#if runtimeReason(entry)}
-									<p class="mt-1 text-xs text-surface-300">{runtimeReason(entry)}</p>
-								{/if}
-							</div>
+							<p class="min-w-0 flex-1 text-sm font-medium text-surface-100">{entry.label.replace(/\s*worker$/i, '')}</p>
+							<span class={`badge ${runtimeStatusTone(String(entry.data?.status ?? 'unknown'))} shrink-0 text-[10px] uppercase tracking-[0.18em]`}>
+								{String(entry.data?.status ?? 'unknown')}
+							</span>
 						</div>
+						{#if runtimeReason(entry)}
+							<p class="mt-2 text-[11px] leading-tight text-surface-300">{shorten(runtimeReason(entry))}</p>
+						{/if}
 					</article>
 				{/each}
 			{/if}

@@ -20,14 +20,21 @@ POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3-embedding:4b")
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
+GEMINI_OUTPUT_DIMENSIONALITY = int(os.getenv("GEMINI_OUTPUT_DIMENSIONALITY", os.getenv("EMBEDDING_DIMS", "2560")))
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/migration-worker.json")
 
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
 CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "1"))
+GEMINI_CONCURRENCY = int(os.getenv("GEMINI_CONCURRENCY", str(max(1, CONCURRENCY))))
 STATUS_UPDATE_EVERY = int(os.getenv("MIGRATION_STATUS_UPDATE_EVERY", "1"))
 EMBED_CHUNK_SIZE = int(os.getenv("EMBED_CHUNK_SIZE", "1500"))
 EMBED_CHUNK_OVERLAP = int(os.getenv("EMBED_CHUNK_OVERLAP", "150"))
 EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
+GEMINI_RETRY_SLEEP_SECONDS = float(os.getenv("GEMINI_RETRY_SLEEP_SECONDS", "2"))
 INTERNAL_CONTROL_COLUMNS = {
     "embedding_source_text": "TEXT",
     "embedding_status": "TEXT",
@@ -143,34 +150,68 @@ async def get_embedding(session, text):
 
         vectors = []
         for chunk in chunks:
-            async with session.post(
-                f"{OLLAMA_HOST}/api/embeddings",
-                json={"model": DEFAULT_MODEL, "prompt": chunk},
-                timeout=120,
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    vector = data.get("embedding", [])
-                    if vector:
-                        vectors.append(vector)
-                    continue
+            if EMBEDDING_PROVIDER == "gemini":
+                if not GEMINI_API_KEY:
+                    print("GEMINI_API_KEY is missing while EMBEDDING_PROVIDER=gemini")
+                    return None
+                async with session.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_EMBED_MODEL}:embedContent",
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": GEMINI_API_KEY,
+                    },
+                    json={
+                        "model": f"models/{GEMINI_EMBED_MODEL}",
+                        "content": {"parts": [{"text": chunk}]},
+                        "output_dimensionality": GEMINI_OUTPUT_DIMENSIONALITY,
+                    },
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        vector = []
+                        if isinstance(data.get("embedding"), dict):
+                            vector = data.get("embedding", {}).get("values", []) or []
+                        if not vector and isinstance(data.get("embeddings"), list) and data["embeddings"]:
+                            vector = (data["embeddings"][0] or {}).get("values", []) or []
+                        if vector:
+                            vectors.append(vector)
+                        continue
+                    body = await response.text()
+                    if response.status == 429:
+                        print(f"Gemini rate limited: {body}")
+                        return None
+                    print(f"Gemini error {response.status}: {body}")
+                    return None
+            else:
+                async with session.post(
+                    f"{OLLAMA_HOST}/api/embeddings",
+                    json={"model": DEFAULT_MODEL, "prompt": chunk},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        vector = data.get("embedding", [])
+                        if vector:
+                            vectors.append(vector)
+                        continue
 
-                body = await response.text()
-                if "context length" in body.lower() and len(chunk) > EMBED_RETRY_MIN_CHUNK:
-                    smaller_size = max(EMBED_RETRY_MIN_CHUNK, len(chunk) // 2)
-                    nested_vectors = []
-                    for sub_chunk in split_embedding_text(
-                        chunk,
-                        smaller_size,
-                        max(EMBED_CHUNK_OVERLAP // 2, 50),
-                    ):
-                        sub_vector = await get_embedding(session, sub_chunk)
-                        if sub_vector:
-                            nested_vectors.append(sub_vector)
-                    return average_embeddings(nested_vectors)
+                    body = await response.text()
+                    if "context length" in body.lower() and len(chunk) > EMBED_RETRY_MIN_CHUNK:
+                        smaller_size = max(EMBED_RETRY_MIN_CHUNK, len(chunk) // 2)
+                        nested_vectors = []
+                        for sub_chunk in split_embedding_text(
+                            chunk,
+                            smaller_size,
+                            max(EMBED_CHUNK_OVERLAP // 2, 50),
+                        ):
+                            sub_vector = await get_embedding(session, sub_chunk)
+                            if sub_vector:
+                                nested_vectors.append(sub_vector)
+                        return average_embeddings(nested_vectors)
 
-                print(f"Ollama error {response.status}: {body}")
-                return None
+                    print(f"Ollama error {response.status}: {body}")
+                    return None
 
         return average_embeddings(vectors)
     except Exception as exc:
@@ -312,6 +353,7 @@ async def migrate_table(category):
             conn.commit()
 
         if not rows:
+            provider_concurrency = GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY
             save_status(
                 {
                     "service": "migration-worker",
@@ -323,7 +365,7 @@ async def migrate_table(category):
                     "updated_at": utc_now(),
                     "details": {
                         "batch_size": 0,
-                        "concurrency": CONCURRENCY,
+                        "concurrency": max(1, provider_concurrency),
                         "completed_in_batch": 0,
                         "successful_in_batch": 0,
                     },
@@ -342,17 +384,17 @@ async def migrate_table(category):
                 "updated_at": utc_now(),
                 "details": {
                     "batch_size": len(rows),
-                    "concurrency": CONCURRENCY,
+                    "concurrency": max(1, GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY),
                     "completed_in_batch": 0,
                     "successful_in_batch": 0,
                 },
             }
         )
 
-        print(f"Generating embeddings for batch of {len(rows)} with concurrency {CONCURRENCY}...")
-
         async with aiohttp.ClientSession() as session:
-            semaphore = asyncio.Semaphore(CONCURRENCY)
+            provider_concurrency = GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY
+            print(f"Generating embeddings for batch of {len(rows)} with concurrency {max(1, provider_concurrency)}...")
+            semaphore = asyncio.Semaphore(max(1, provider_concurrency))
             status_lock = asyncio.Lock()
             db_lock = asyncio.Lock()
             completed_in_batch = 0
@@ -380,7 +422,7 @@ async def migrate_table(category):
                                 "updated_at": utc_now(),
                                 "details": {
                                     "batch_size": len(rows),
-                                    "concurrency": CONCURRENCY,
+                                    "concurrency": max(1, provider_concurrency),
                                     "completed_in_batch": completed_in_batch,
                                     "successful_in_batch": successful_in_batch,
                                 },
@@ -405,7 +447,7 @@ async def migrate_table(category):
                     "updated_at": utc_now(),
                     "details": {
                         "batch_size": len(rows),
-                        "concurrency": CONCURRENCY,
+                        "concurrency": max(1, provider_concurrency),
                     },
                 }
             )

@@ -153,11 +153,14 @@ def process_account(account, settings):
             for (flags, delimiter, folder_name) in folders:
                 if b'\\Noselect' in flags: continue
                 
-                skip_flags = {b'\\Trash', b'\\Spam', b'\\Junk', b'\\Drafts', b'\\Deleted'}
-                if any(flag in skip_flags for flag in flags): continue
+                # Intelligently identify and skip junk/spam/trash folders
+                norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
+                skip_flags = {'\\trash', '\\spam', '\\junk', '\\drafts', '\\deleted'}
+                if any(flag in skip_flags for flag in norm_flags): continue
                 
                 folder_lower = folder_name.lower()
-                if any(x in folder_lower for x in ['spam', 'junk', 'trash', 'deleted']): continue
+                skip_keywords = ['spam', 'junk', 'trash', 'deleted', 'bulk', 'low-priority']
+                if any(x in folder_lower for x in skip_keywords): continue
 
                 logger.info(f"Scanning folder: {folder_name}")
                 folders_seen += 1
@@ -274,14 +277,20 @@ def process_account(account, settings):
                         logger.error(f"Error processing email UID {uid}: {e}")
             
     except Exception as e:
-        logger.error(f"Error connecting to account {name}: {e}")
+        error_str = str(e)
+        if "AUTHENTICATIONFAILED" in error_str or "Invalid credentials" in error_str:
+            human_error = f"Invalid password for account: {name}"
+        else:
+            human_error = error_str
+
+        logger.error(f"Error connecting to account {name}: {error_str}")
         save_status({
             "service": "email-worker",
             "status": "error",
             "current_account": name,
             "last_cycle_started_at": started_at,
             "last_cycle_finished_at": utc_now(),
-            "last_error": str(e),
+            "last_error": human_error,
             "items_processed": messages_processed,
             "details": {"folders_seen": folders_seen},
             "updated_at": utc_now(),

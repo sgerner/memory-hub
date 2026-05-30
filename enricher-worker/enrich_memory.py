@@ -18,14 +18,23 @@ AGENTMEMORY_TOKEN = os.getenv("AGENTMEMORY_TOKEN")
 SETTINGS_PATH = "/app/config/settings.json"
 SECRETS_PATH = os.getenv("SECRETS_PATH", "/app/shared-settings/secrets.json")
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/enricher-worker.json")
+ENRICH_PROVIDER = os.getenv("ENRICH_PROVIDER", "opencode").strip().lower()
 
 OPENCODE_GO_BASE_URL = os.getenv("LLM_BASE_URL", "https://opencode.ai/zen/go/v1")
 OPENCODE_ZEN_BASE_URL = os.getenv("LLM_FREE_BASE_URL", "https://opencode.ai/zen/v1")
-FALLBACK_RPM_CAP = int(os.getenv("ENRICH_FALLBACK_RPM_CAP", "4"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
+GEMINI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "90"))
+GEMINI_CONCURRENCY = int(os.getenv("GEMINI_CONCURRENCY", "8"))
 PRIMARY_COOLDOWN_SECONDS = 5 * 60 * 60
 PRIMARY_COOLDOWN_STATE_PATH = os.getenv(
     "PRIMARY_COOLDOWN_STATE_PATH",
     "/app/status/enricher-worker-primary-cooldown.json",
+)
+FALLBACK_COOLDOWN_SECONDS = int(os.getenv("FALLBACK_COOLDOWN_SECONDS", str(15 * 60)))
+FALLBACK_COOLDOWN_STATE_PATH = os.getenv(
+    "FALLBACK_COOLDOWN_STATE_PATH",
+    "/app/status/enricher-worker-fallback-cooldown.json",
 )
 
 BATCH_SIZE = int(os.getenv("ENRICH_BATCH_SIZE", "100"))
@@ -95,7 +104,10 @@ def load_settings():
         "batch_size": BATCH_SIZE,
         "sleep_interval": SLEEP_INTERVAL,
         "concurrency": CONCURRENCY,
+        "gemini_concurrency": GEMINI_CONCURRENCY,
         "text_limit": 8000,
+        "gemini_model": GEMINI_MODEL,
+        "gemini_request_timeout_seconds": GEMINI_REQUEST_TIMEOUT_SECONDS,
         "email_model": "deepseek-v4-flash",
         "email_fallback_model": "deepseek-v4-flash-free",
         "knowledge_model": "deepseek-v4-flash",
@@ -103,12 +115,31 @@ def load_settings():
         "fallback_requests_per_minute": 4,
     }
     configured = load_json(SETTINGS_PATH, {})
-    for key in ("batch_size", "sleep_interval", "concurrency", "text_limit", "fallback_requests_per_minute"):
+    for key in ("batch_size", "sleep_interval", "concurrency", "gemini_concurrency", "text_limit", "fallback_requests_per_minute"):
         if key in configured:
             settings[key] = int(configured[key])
     for key in ("email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"):
         if key in configured:
             settings[key] = str(configured[key])
+
+    env_overrides = {
+        "batch_size": os.getenv("ENRICH_BATCH_SIZE"),
+        "sleep_interval": os.getenv("ENRICH_SLEEP_INTERVAL"),
+        "concurrency": os.getenv("ENRICH_CONCURRENCY"),
+        "gemini_concurrency": os.getenv("GEMINI_CONCURRENCY"),
+        "text_limit": os.getenv("ENRICH_TEXT_LIMIT"),
+        "email_model": os.getenv("ENRICH_EMAIL_MODEL"),
+        "email_fallback_model": os.getenv("ENRICH_EMAIL_FALLBACK_MODEL"),
+        "knowledge_model": os.getenv("ENRICH_KNOWLEDGE_MODEL"),
+        "knowledge_fallback_model": os.getenv("ENRICH_KNOWLEDGE_FALLBACK_MODEL"),
+    }
+    for key, value in env_overrides.items():
+        if value is None or value == "":
+            continue
+        if key in {"email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"}:
+            settings[key] = str(value)
+        else:
+            settings[key] = int(value)
     return settings
 
 
@@ -117,6 +148,7 @@ def load_secrets():
     primary_api_key = str(secrets.get("llm_api_key") or os.getenv("LLM_API_KEY", "")).strip()
     return {
         "llm_api_key": primary_api_key,
+        "gemini_api_key": str(secrets.get("gemini_api_key") or os.getenv("GEMINI_API_KEY", "")).strip(),
         "fallback_api_key": str(
             secrets.get("fallback_llm_api_key")
             or secrets.get("llm_fallback_api_key")
@@ -127,9 +159,11 @@ def load_secrets():
 
 
 def effective_concurrency(settings, secrets):
+    if ENRICH_PROVIDER == "gemini":
+        return max(1, settings["gemini_concurrency"])
     if secrets["llm_api_key"]:
         return settings["concurrency"]
-    fallback_capacity = max(1, min(settings["fallback_requests_per_minute"], FALLBACK_RPM_CAP) // 2)
+    fallback_capacity = max(1, settings["fallback_requests_per_minute"] // 2)
     return max(1, min(settings["concurrency"], fallback_capacity))
 
 
@@ -188,7 +222,64 @@ class PrimaryCooldownState:
         os.replace(temp_path, self.path)
 
 
-def provider_status_fields(settings, secrets, primary_cooldown: PrimaryCooldownState) -> dict:
+class FallbackCooldownState:
+    def __init__(self, path: str = FALLBACK_COOLDOWN_STATE_PATH, duration_seconds: int = FALLBACK_COOLDOWN_SECONDS):
+        self.path = path
+        self.duration_seconds = duration_seconds
+        self.cooldown_until = self._load()
+
+    def _load(self) -> float:
+        state = load_json(self.path, {})
+        cooldown_until = parse_timestamp(state.get("fallback_rate_limited_until"))
+        if cooldown_until <= time.time():
+            return 0.0
+        return cooldown_until
+
+    def is_active(self) -> bool:
+        return self.cooldown_until > time.time()
+
+    def remaining_seconds(self) -> int:
+        if not self.is_active():
+            return 0
+        return max(0, int(self.cooldown_until - time.time()))
+
+    def until_iso(self) -> str:
+        return iso_from_epoch(self.cooldown_until)
+
+    def activate(self, fallback_model: str) -> None:
+        self.cooldown_until = time.time() + self.duration_seconds
+        payload = {
+            "fallback_rate_limited_until": self.until_iso(),
+            "fallback_rate_limited_for_seconds": self.duration_seconds,
+            "fallback_rate_limited_model": fallback_model,
+            "updated_at": utc_now(),
+        }
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        temp_path = f"{self.path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temp_path, self.path)
+
+
+def provider_status_fields(
+    settings,
+    secrets,
+    primary_cooldown: PrimaryCooldownState,
+    fallback_cooldown: FallbackCooldownState | None = None,
+) -> dict:
+    if ENRICH_PROVIDER == "gemini":
+        gemini_active = bool(secrets["gemini_api_key"])
+        return {
+            "primary_provider": f"gemini:{settings['gemini_model']}" if gemini_active else "none",
+            "fallback_provider": "none",
+            "primary_cooldown_active": False,
+            "primary_cooldown_until": "",
+            "primary_cooldown_remaining_seconds": 0,
+            "fallback_cooldown_active": False,
+            "fallback_cooldown_until": "",
+            "fallback_cooldown_remaining_seconds": 0,
+        }
+
     primary_active = bool(secrets["llm_api_key"])
     fallback_active = bool(secrets["fallback_api_key"])
     return {
@@ -197,15 +288,23 @@ def provider_status_fields(settings, secrets, primary_cooldown: PrimaryCooldownS
         "primary_cooldown_active": primary_cooldown.is_active(),
         "primary_cooldown_until": primary_cooldown.until_iso(),
         "primary_cooldown_remaining_seconds": primary_cooldown.remaining_seconds(),
+        "fallback_cooldown_active": fallback_cooldown.is_active() if fallback_cooldown else False,
+        "fallback_cooldown_until": fallback_cooldown.until_iso() if fallback_cooldown else "",
+        "fallback_cooldown_remaining_seconds": fallback_cooldown.remaining_seconds() if fallback_cooldown else 0,
     }
 
 
-def refresh_status_with_cooldown(settings, secrets, primary_cooldown: PrimaryCooldownState) -> None:
+def refresh_status_with_cooldown(
+    settings,
+    secrets,
+    primary_cooldown: PrimaryCooldownState,
+    fallback_cooldown: FallbackCooldownState | None = None,
+) -> None:
     try:
         status = load_json(STATUS_PATH, {})
         if not isinstance(status, dict):
             status = {}
-        status.update(provider_status_fields(settings, secrets, primary_cooldown))
+        status.update(provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown))
         status["updated_at"] = utc_now()
         save_status(status)
     except Exception as exc:
@@ -805,7 +904,75 @@ async def call_llm(session, api_key, base_url, model, category, text, text_limit
         return None
 
 
-async def enrich_with_fallback(session, text, category, source_metadata, settings, secrets, limiter, primary_cooldown):
+async def call_gemini(session, api_key, model, category, text, text_limit, source_context=""):
+    try:
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": build_system_prompt(category)}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": build_user_prompt(category, text, text_limit, source_context)}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 1024,
+            },
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+        async with session.post(url, json=payload, timeout=GEMINI_REQUEST_TIMEOUT_SECONDS) as response:
+            if response.status == 429:
+                return "RATE_LIMIT"
+            response.raise_for_status()
+            data = await response.json()
+            candidates = data.get("candidates") or []
+            for candidate in candidates:
+                content = candidate.get("content") or {}
+                parts = content.get("parts") or []
+                texts = []
+                for part in parts:
+                    if isinstance(part, dict) and part.get("text"):
+                        texts.append(part["text"])
+                if texts:
+                    return "\n".join(texts).strip()
+            return ""
+    except Exception as exc:
+        logger.error("Gemini call to %s failed: %s", model, exc)
+        return None
+
+
+async def enrich_with_fallback(
+    session,
+    text,
+    category,
+    source_metadata,
+    settings,
+    secrets,
+    limiter,
+    primary_cooldown,
+    fallback_cooldown,
+):
+    if ENRICH_PROVIDER == "gemini":
+        if secrets["gemini_api_key"]:
+            response = await call_gemini(
+                session,
+                secrets["gemini_api_key"],
+                settings["gemini_model"],
+                category,
+                text,
+                settings["text_limit"],
+                build_source_context(category, source_metadata),
+            )
+            if response == "RATE_LIMIT":
+                logger.warning("Gemini provider rate limited for %s.", settings["gemini_model"])
+                return "RATE_LIMIT"
+            if response:
+                return normalize_enrichment(response, category)
+        return None
+
     if category == "emails":
         primary_model = settings["email_model"]
         fallback_model = settings["email_fallback_model"]
@@ -829,9 +996,13 @@ async def enrich_with_fallback(session, text, category, source_metadata, setting
         if response == "RATE_LIMIT":
             logger.warning("Primary provider rate limited for %s. Cooling off for 5 hours.", primary_model)
             primary_cooldown.activate(primary_model)
-            refresh_status_with_cooldown(settings, secrets, primary_cooldown)
+            refresh_status_with_cooldown(settings, secrets, primary_cooldown, fallback_cooldown)
         elif response:
             return normalize_enrichment(response, category)
+
+    if fallback_cooldown.is_active():
+        logger.warning("Fallback provider cooling down for %s more seconds.", fallback_cooldown.remaining_seconds())
+        return "RATE_LIMIT"
 
     if secrets["fallback_api_key"]:
         await limiter.wait()
@@ -847,6 +1018,7 @@ async def enrich_with_fallback(session, text, category, source_metadata, setting
         )
         if response == "RATE_LIMIT":
             logger.warning("Fallback provider rate limited for %s.", fallback_model)
+            fallback_cooldown.activate(fallback_model)
             return "RATE_LIMIT"
         if response:
             return normalize_enrichment(response, category)
@@ -884,7 +1056,7 @@ async def update_memory(session, memory_id, category, original_content, enrichme
         return False
 
 
-async def process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown):
+async def process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown):
     async with semaphore:
         memory_id = item["id"]
         content = item["content"]
@@ -900,6 +1072,7 @@ async def process_item(session, semaphore, item, settings, secrets, limiter, pri
             secrets,
             limiter,
             primary_cooldown,
+            fallback_cooldown,
         )
         if enrichment == "RATE_LIMIT":
             return "RATE_LIMIT"
@@ -920,8 +1093,9 @@ async def enrich_batch():
     secrets = load_secrets()
     concurrency = effective_concurrency(settings, secrets)
     pending = get_pending_memories(settings)
-    fallback_requests_per_minute = max(1, min(settings["fallback_requests_per_minute"], FALLBACK_RPM_CAP))
+    fallback_requests_per_minute = max(1, settings["fallback_requests_per_minute"])
     primary_cooldown = PrimaryCooldownState()
+    fallback_cooldown = FallbackCooldownState()
 
     if not pending:
         now = utc_now()
@@ -934,7 +1108,7 @@ async def enrich_batch():
                 "last_success_at": now,
                 "items_processed": 0,
                 "items_remaining": 0,
-                **provider_status_fields(settings, secrets, primary_cooldown),
+                **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
                 "concurrency": concurrency,
                 "batch_size": settings["batch_size"],
                 "rate_limit_per_minute": fallback_requests_per_minute,
@@ -956,7 +1130,7 @@ async def enrich_batch():
             "last_cycle_started_at": started_at,
             "items_total": len(pending),
             "items_remaining": len(pending),
-            **provider_status_fields(settings, secrets, primary_cooldown),
+            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
@@ -969,7 +1143,9 @@ async def enrich_batch():
 
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
-            asyncio.create_task(process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown))
+            asyncio.create_task(
+                process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown)
+            )
             for item in pending
         ]
 
@@ -995,14 +1171,14 @@ async def enrich_batch():
                             "last_cycle_finished_at": finished_at,
                             "items_processed": enriched_count,
                             "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
-                            **provider_status_fields(settings, secrets, primary_cooldown),
+                            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
                             "concurrency": concurrency,
                             "batch_size": settings["batch_size"],
                             "rate_limit_per_minute": fallback_requests_per_minute,
                             "updated_at": finished_at,
                         }
                     )
-                    return True
+                    return False
         except Exception as exc:
             logger.error("Batch error: %s", exc)
             for task in tasks:
@@ -1016,13 +1192,13 @@ async def enrich_batch():
                     "status": "error",
                     "last_cycle_started_at": started_at,
                     "last_cycle_finished_at": finished_at,
-                    "last_error": str(exc),
-                    "items_processed": enriched_count,
-                    "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
-                    **provider_status_fields(settings, secrets, primary_cooldown),
-                    "concurrency": concurrency,
-                    "batch_size": settings["batch_size"],
-                    "rate_limit_per_minute": fallback_requests_per_minute,
+                            "last_error": str(exc),
+                            "items_processed": enriched_count,
+                            "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
+                            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
+                            "concurrency": concurrency,
+                            "batch_size": settings["batch_size"],
+                            "rate_limit_per_minute": fallback_requests_per_minute,
                     "updated_at": finished_at,
                 }
             )
@@ -1038,7 +1214,7 @@ async def enrich_batch():
             "last_success_at": finished_at,
             "items_processed": enriched_count,
             "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
-            **provider_status_fields(settings, secrets, primary_cooldown),
+            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
@@ -1061,7 +1237,8 @@ def main():
                 settings = load_settings()
                 secrets = load_secrets()
                 primary_cooldown = PrimaryCooldownState()
-                provider_fields = provider_status_fields(settings, secrets, primary_cooldown)
+                fallback_cooldown = FallbackCooldownState()
+                provider_fields = provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown)
             except Exception:
                 provider_fields = {}
             save_status(

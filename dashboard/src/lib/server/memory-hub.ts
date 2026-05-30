@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize } from 'node:path';
 
 export const memoryHubRoot = env.MEMORY_HUB_DATA_DIR ?? '/app/data/memory-hub';
+export const memoryIngestDir = env.MEMORY_INGEST_DIR ?? '/srv/ingest';
+export const memoryObsidianDir = env.MEMORY_OBSIDIAN_DIR ?? '/srv/ingest/obsidian';
 export const settingsDir = join(memoryHubRoot, 'settings');
 export const statusDir = join(memoryHubRoot, 'status');
 export const backupDir = join(memoryHubRoot, 'backups');
@@ -59,4 +61,3 @@ export function sanitizeRelativePath(path: string): string {
 	}
 	return normalize(normalized).replace(/^\/+/, '');
 }
-
