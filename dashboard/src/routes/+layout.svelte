@@ -1,55 +1,112 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { fade } from 'svelte/transition';
 	import '../app.css';
 
 	const nav = [
 		{ href: '/', label: 'Overview', hint: 'Memory activity and recent records' },
 		{ href: '/settings', label: 'Settings', hint: 'Enrichment, sources, worker controls' }
 	];
+
+	function getWorkerSuggestion(label: string, error?: string): string {
+		const err = (error ?? '').toLowerCase();
+		const l = label.toLowerCase();
+		if (l.includes('email')) {
+			if (err.includes('password') || err.includes('auth') || err.includes('login') || err.includes('credential')) {
+				return "Please check and update your IMAP password under 'Email Ingestion' in Settings.";
+			}
+			return "Check IMAP host, port, security credentials, or connection settings under 'Email Ingestion' in Settings.";
+		}
+		if (l.includes('github')) {
+			return "Verify that your GitHub Personal Access Token is correct and active under 'File Ingestion' in Settings.";
+		}
+		if (l.includes('obsidian')) {
+			return "Check that your Obsidian Vault directory path is correct and accessible on the local system.";
+		}
+		if (l.includes('docs') || l.includes('document')) {
+			return "Ensure the directory paths listed under 'Documents Ingestion' exist on the host filesystem and are readable.";
+		}
+		if (l.includes('enrich')) {
+			return "Check your primary/fallback API tokens under 'Enrichment' in Settings, or verify model endpoints.";
+		}
+		if (l.includes('backup')) {
+			return "Ensure the backup destination directory is writable and the filesystem has sufficient space.";
+		}
+		return "Please verify the credentials, connection settings, or review the stack docker container logs.";
+	}
 </script>
 
 <svelte:head>
 	<meta name="color-scheme" content="dark" />
 </svelte:head>
 
-<div class="relative min-h-screen overflow-hidden">
-	<div class="aurora aura-left"></div>
-	<div class="aurora aura-right"></div>
-	<div class="aurora aura-bottom"></div>
-
-		<header class="sticky top-0 z-20 border-b border-white/10 bg-surface-950/70 backdrop-blur-xl">
-			<div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-4">
-				<div class="space-y-1">
-					<p class="text-xs font-semibold uppercase tracking-[0.34em] text-primary-300">Memory Hub</p>
-				</div>
-				<div class="flex flex-wrap items-center gap-2">
-					{#if page.data?.backendError}
-						<span class="badge preset-tonal-warning">
-							<span class="loading-dot mr-2"></span>
-							Data unavailable
-						</span>
-					{:else if page.url.pathname === '/'}
-						<span class="badge preset-tonal-success">
-							<span class="loading-dot mr-2"></span>
-							Gateway online
-						</span>
-					{/if}
-					<nav class="flex flex-wrap gap-2">
-						{#each nav as item}
-							<a
-								class={`btn btn-sm ${
-									page.url.pathname === item.href ? 'preset-filled-primary-500' : 'preset-tonal-surface'
-								}`}
-								href={item.href}
-								title={item.hint}
-							>
-								{item.label}
-							</a>
-						{/each}
-					</nav>
-				</div>
+<!-- Sticky header -->
+<header class="sticky top-0 z-50">
+	<!-- Nav bar -->
+	<div class="flex items-center justify-between gap-6 px-6 py-3 border-b border-white/[0.06] bg-[#030508]/90 backdrop-blur-xl">
+		<div class="flex items-center gap-8">
+			<div class="flex items-center gap-2.5">
+				<div class="w-1.5 h-1.5 rounded-full bg-primary-400" style="box-shadow: 0 0 8px var(--color-primary-400)"></div>
+				<span class="font-mono text-[0.6rem] font-bold tracking-[0.4em] uppercase text-surface-300">Memory Hub</span>
 			</div>
-		</header>
+			<nav class="flex items-center gap-1">
+				{#each nav as item}
+					<a
+						href={item.href}
+						class="font-mono text-[0.62rem] font-semibold tracking-[0.16em] uppercase px-3 py-1.5 transition-colors {page.url.pathname === item.href ? 'text-primary-300 bg-primary-500/10' : 'text-surface-500 hover:text-surface-200'}"
+					>
+						{item.label}
+					</a>
+				{/each}
+			</nav>
+		</div>
 
-	<slot />
-</div>
+		{#if page.data?.backendError}
+			<span class="process-status error font-mono text-[0.58rem]">
+				<span class="pulse-dot mr-1.5"></span>
+				Backend offline
+			</span>
+		{:else if page.url.pathname === '/'}
+			<span class="process-status running font-mono text-[0.58rem]">
+				<span class="pulse-dot mr-1.5"></span>
+				Gateway online
+			</span>
+		{/if}
+	</div>
+
+	<!-- Worker process bar -->
+	<div class="process-bar no-scrollbar">
+		{#if (page.data?.observability ?? []).length > 0}
+			{#each (page.data?.observability ?? []) as entry}
+				{@const status = String(entry.data?.status ?? 'unknown')}
+				{@const dotClass = status === 'running' || status === 'healthy' || status === 'ok' || status === 'busy' ? 'running' : status === 'error' ? 'error' : status === 'deferred' || status === 'queued' || status === 'degraded' ? 'warn' : 'idle'}
+				<div class="process-entry" title={entry.label}>
+					<div class="process-dot {dotClass}"></div>
+					<span class="process-name">{entry.label.replace(/\s*worker$/i, '')}</span>
+					<span class="process-status {dotClass}">{status}</span>
+				</div>
+			{/each}
+		{/if}
+	</div>
+
+	<!-- Worker error alerts -->
+	{#if page.data?.observability}
+		{#each page.data.observability as entry}
+			{#if entry.data?.status === 'error'}
+				<div class="border-b border-error-500/25 bg-error-950/20 px-6 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4 font-mono text-xs" transition:fade>
+					<div class="flex items-start gap-3 min-w-0">
+						<span class="text-error-400 font-bold shrink-0 mt-0.5">[ERROR] {entry.label.toUpperCase()}:</span>
+						<div class="min-w-0">
+							<p class="text-surface-100 font-medium break-words">{entry.data.last_error || 'An unexpected error was reported.'}</p>
+							<p class="text-surface-400 text-[10px] mt-1"><span class="text-surface-500 font-bold">REMEDY:</span> {getWorkerSuggestion(entry.label, entry.data.last_error)}</p>
+						</div>
+					</div>
+					<a href="/settings" class="ghost-btn danger shrink-0 self-start md:self-center text-center">Update settings</a>
+				</div>
+			{/if}
+		{/each}
+	{/if}
+</header>
+
+<slot />
+

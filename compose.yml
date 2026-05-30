@@ -61,6 +61,7 @@ services:
       - ollama
     networks:
       - memory-internal
+      - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
@@ -147,6 +148,7 @@ services:
       - "${GATEWAY_PORT:-3112}:3112"
     networks:
       - memory-internal
+      - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
@@ -171,6 +173,7 @@ services:
       - memory-agent-gateway
     networks:
       - memory-internal
+      - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
@@ -278,3 +281,5 @@ services:
 networks:
   memory-internal:
     driver: bridge
+  proxy:
+    external: true
