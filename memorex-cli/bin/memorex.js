@@ -10,7 +10,10 @@ function fail(message) {
 function usage() {
   console.log(`Usage:
   memorex health
+  memorex overview [--limit <number>]
+  memorex queue
   memorex recall <query> [--category <name>] [--limit <number>] [--inactive]
+  memorex list <category> [--limit <number>] [--offset <number>] [--inactive]
   memorex store <content> [--category agent] [--kind fact] [--importance 0.5] [--confidence 0.8] [--retention normal] [--agent <name>]
   memorex patch <category> <id> [--content <text>] [--agent <name>] [--meta key=value]
   memorex supersede <category> <id> <content> [--new-category agent] [--kind fact] [--reason <text>] [--agent <name>]
@@ -62,6 +65,15 @@ function metadata(values = []) {
   }));
 }
 
+function optionNumber(options, key, fallback) {
+  if (options[key] === undefined) return fallback;
+  const value = Number(options[key]);
+  if (!Number.isFinite(value)) {
+    throw new Error(`--${key} must be a number`);
+  }
+  return value;
+}
+
 async function request(path, method, body, config) {
   const headers = { Accept: "application/json" };
   if (config.token) {
@@ -109,15 +121,35 @@ async function main() {
     case "health":
       result = await request("/health", "GET", undefined, config);
       break;
+    case "overview":
+      result = await request(
+        `/v1/overview?sample_limit=${encodeURIComponent(optionNumber(options, "limit", 10))}`,
+        "GET",
+        undefined,
+        config,
+      );
+      break;
+    case "queue":
+      result = await request("/v1/queue-status", "GET", undefined, config);
+      break;
     case "recall":
       if (!positional[0]) throw new Error("recall requires a query");
       result = await request("/v1/recall", "POST", {
         query: positional[0],
         categories: options.category ? [options.category] : undefined,
-        limit: options.limit ? Number(options.limit) : undefined,
+        limit: options.limit ? optionNumber(options, "limit") : undefined,
         include_inactive: Boolean(options.inactive),
         metadata: metadata(options.meta),
       }, config);
+      break;
+    case "list":
+      if (!positional[0]) throw new Error("list requires a category");
+      result = await request(
+        `/v1/memories/${encodeURIComponent(positional[0])}?limit=${encodeURIComponent(optionNumber(options, "limit", 25))}&offset=${encodeURIComponent(optionNumber(options, "offset", 0))}&include_inactive=${Boolean(options.inactive)}`,
+        "GET",
+        undefined,
+        config,
+      );
       break;
     case "store":
       if (!positional[0]) throw new Error("store requires content");
@@ -125,8 +157,8 @@ async function main() {
         content: positional[0],
         category: options.category,
         kind: options.kind,
-        importance: options.importance ? Number(options.importance) : undefined,
-        confidence: options.confidence ? Number(options.confidence) : undefined,
+        importance: options.importance ? optionNumber(options, "importance") : undefined,
+        confidence: options.confidence ? optionNumber(options, "confidence") : undefined,
         retention: options.retention,
         source_agent: options.agent,
         metadata: metadata(options.meta),

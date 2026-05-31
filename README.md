@@ -26,6 +26,7 @@ It does **not** hardcode a domain. Set your own public origin if you put a rever
 | `github-worker` | GitHub ingestion | `github-worker/` |
 | `enricher-worker` | Remote summarization and metadata enrichment | `enricher-worker/` |
 | `memorex-cli` | Thin CLI wrapper around the gateway | `memorex-cli/` |
+| `plugins/` | Codex, Antigravity, and OpenCode plugin bundles | `plugins/`, `.opencode/` |
 
 ## What is not included
 
@@ -101,6 +102,7 @@ The stack is driven by `.env`. The most important values are:
 | Variable | Purpose |
 | --- | --- |
 | `MEMORY_DATA_DIR` | Root of runtime data: settings, status files, backups, database volume, and Ollama volume |
+| `MEMORY_NETWORK_NAME` | Docker network used by Memory Hub services; defaults to `memory-internal` and is created by `make init` |
 | `MEMORY_INGEST_DIR` | Root of document source mounts such as `gdrive/` and `docs/` |
 | `MEMORY_OBSIDIAN_DIR` | Root of the Obsidian vault source |
 | `MEMORY_PUBLIC_ORIGIN` | Optional public URL for the dashboard or gateway behind a reverse proxy |
@@ -143,6 +145,16 @@ make init
 That creates the expected directory layout and writes default JSON settings if they are missing.
 
 If you want an LLM to do the setup or restore work, start with [LLM_SETUP_PROMPT.md](./LLM_SETUP_PROMPT.md).
+
+## Agent plugins
+
+Install the plugin bundles for any machine that already has Codex, Antigravity, or OpenCode installed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sgerner/memory-hub/main/scripts/install-agent-plugins.sh | bash
+```
+
+That command clones the repo, stages the plugin bundles in a local data directory, and registers whichever CLIs it finds on the machine.
 
 ## Deploy
 
@@ -311,7 +323,14 @@ export MEMOREX_TOKEN=replace-with-agent-gateway-token
 
 memorex recall "What decisions did I make about authentication?"
 memorex store "Prefer migration scripts to manual schema edits." --kind preference --retention durable
+memorex list agent --limit 10 --inactive
+memorex queue
+memorex overview --limit 5
 ```
+
+The Streamable HTTP MCP gateway exposes the same agent workflow through tools:
+`memory_store`, `memory_recall`, `memory_list`, `memory_patch`, `memory_supersede`,
+`memory_archive`, `memory_forget`, `memory_overview`, and `memory_queue_status`.
 
 ## Validation
 

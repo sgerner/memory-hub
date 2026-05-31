@@ -1,0 +1,10 @@
+{
+  "name": "antigravity-memory-hub",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.1",
+    "zod": "^3.25.76"
+  }
+}

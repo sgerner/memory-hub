@@ -5,6 +5,7 @@
 
 	const nav = [
 		{ href: '/', label: 'Overview', hint: 'Memory activity and recent records' },
+		{ href: '/access', label: 'Access', hint: 'CLI, MCP, and agent instructions' },
 		{ href: '/settings', label: 'Settings', hint: 'Enrichment, sources, worker controls' }
 	];
 

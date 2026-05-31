@@ -122,6 +122,45 @@ def ensure_vector_indexes():
                 if not cur.fetchone()["to_regclass"]:
                     continue
 
+                existing_cols = existing_columns(cur, table_name)
+
+                operational_indexes: list[tuple[str, str]] = []
+                if "embedding_status" in existing_cols:
+                    operational_indexes.append(
+                        (
+                            f"{table_name}_embedding_status_available_idx",
+                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lower(embedding_status), embedding_available_at, id)",
+                        )
+                    )
+                if "embedding" in existing_cols:
+                    operational_indexes.append(
+                        (
+                            f"{table_name}_embedding_missing_idx",
+                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (id) WHERE embedding IS NULL",
+                        )
+                    )
+                if "needs_enrichment" in existing_cols:
+                    operational_indexes.append(
+                        (
+                            f"{table_name}_needs_enrichment_idx",
+                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (id) WHERE lower(coalesce(needs_enrichment::text, 'false')) IN ('true', '1', 'yes')",
+                        )
+                    )
+                if "lifecycle_status" in existing_cols:
+                    operational_indexes.append(
+                        (
+                            f"{table_name}_lifecycle_status_id_idx",
+                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lifecycle_status, id DESC)",
+                        )
+                    )
+
+                for index_name, create_sql in operational_indexes:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{index_name}",))
+                    if not cur.fetchone()["to_regclass"]:
+                        logger.info("Creating operational index %s on %s", index_name, table_name)
+                        cur.execute(create_sql.format(name=index_name))
+                        logger.info("Operational index ready: %s", index_name)
+
                 index_name = f"{table_name}_embedding_halfvec_hnsw_idx"
                 cur.execute("SELECT to_regclass(%s)", (f"public.{index_name}",))
                 if not cur.fetchone()["to_regclass"]:
@@ -730,8 +769,16 @@ def queue_status(token: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/memories/{category}")
-def get_memories_endpoint(category: str, limit: int = 50, needs_enrichment: Optional[str] = None, token: str = Depends(verify_token)):
+def get_memories_endpoint(
+    category: str,
+    limit: int = 50,
+    offset: int = 0,
+    needs_enrichment: Optional[str] = None,
+    token: str = Depends(verify_token),
+):
     try:
+        limit = max(1, min(int(limit), 250))
+        offset = max(0, int(offset))
         with get_db_connection() as conn:
             table_name = table_for(category)
             with conn.cursor() as cur:
@@ -749,8 +796,8 @@ def get_memories_endpoint(category: str, limit: int = 50, needs_enrichment: Opti
                 
                 query = f"""SELECT id, document,
                              {metadata_projection('t')}
-                             FROM {table_name} t {where_sql} ORDER BY id DESC LIMIT %s"""
-                cur.execute(query, where_vals + [limit])
+                             FROM {table_name} t {where_sql} ORDER BY id DESC LIMIT %s OFFSET %s"""
+                cur.execute(query, where_vals + [limit, offset])
                 rows = cur.fetchall()
                 
                 results = []

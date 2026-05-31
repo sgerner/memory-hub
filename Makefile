@@ -24,6 +24,7 @@ DATA_DIR := $(MEMORY_DATA_DIR)
 INGEST_DIR := $(MEMORY_INGEST_DIR)
 OBSIDIAN_DIR := $(MEMORY_OBSIDIAN_DIR)
 DEFAULTS_DIR := $(CURDIR)/defaults
+MEMORY_NETWORK ?= $(if $(MEMORY_NETWORK_NAME),$(MEMORY_NETWORK_NAME),memory-internal)
 
 .PHONY: init up down logs ps rebuild
 
@@ -31,6 +32,7 @@ init:
 	@test -n "$(DATA_DIR)" || { echo "Set MEMORY_DATA_DIR in .env"; exit 1; }
 	@test -n "$(INGEST_DIR)" || { echo "Set MEMORY_INGEST_DIR in .env"; exit 1; }
 	@test -n "$(OBSIDIAN_DIR)" || { echo "Set MEMORY_OBSIDIAN_DIR in .env"; exit 1; }
+	@docker network inspect "$(MEMORY_NETWORK)" >/dev/null 2>&1 || docker network create "$(MEMORY_NETWORK)" >/dev/null
 	@mkdir -p \
 		"$(DATA_DIR)/settings" \
 		"$(DATA_DIR)/status" \

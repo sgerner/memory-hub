@@ -1,0 +1,25 @@
+{
+  "name": "memory-hub",
+  "version": "0.1.0+codex.20260531034541",
+  "description": "Direct Memory Hub tools for Codex.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Memory Hub",
+    "shortDescription": "Direct Memory Hub tools for recall and capture.",
+    "longDescription": "Token-efficient Memory Hub tools for Codex that call the gateway REST API directly for recall, capture, lifecycle updates, queue awareness, and compact memory workflows.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Recall relevant context before answering.",
+      "Store durable facts, preferences, and decisions after confirmation.",
+      "Use queue status when the task depends on backlog health."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

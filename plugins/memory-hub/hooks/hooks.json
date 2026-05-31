@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/memory-hub-hook.mjs session-start",
+            "statusMessage": "Loading Memory Hub context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/memory-hub-hook.mjs user-prompt-submit",
+            "statusMessage": "Recalling relevant memories"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/memory-hub-hook.mjs stop",
+            "statusMessage": "Storing a turn summary"
+          }
+        ]
+      }
+    ]
+  }
+}

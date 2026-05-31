@@ -295,15 +295,21 @@ class MemoryService:
         return {"results": combined[: request.limit], "searched_categories": categories}
 
     async def list_memories(
-        self, category: str, limit: int = 25, include_inactive: bool = False
+        self, category: str, limit: int = 25, include_inactive: bool = False, offset: int = 0
     ) -> dict[str, Any]:
-        result = await self.backend.get(f"/memories/{category}", {"limit": limit})
+        result = await self.backend.get(f"/memories/{category}", {"limit": limit, "offset": offset})
         memories = []
         for memory in result.get("memories", []):
             lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
             if include_inactive or lifecycle == "active":
                 memories.append({"category": category, **memory})
-        return {"category": category, "memories": memories, "requested_limit": limit}
+        return {
+            "category": category,
+            "memories": memories,
+            "requested_limit": limit,
+            "offset": offset,
+            "has_more": len(result.get("memories", [])) == limit,
+        }
 
     async def overview(self, sample_limit: int = 20) -> dict[str, Any]:
         batches = await asyncio.gather(
@@ -475,6 +481,36 @@ async def memory_patch(
 
 
 @mcp.tool()
+async def memory_list(
+    category: str = "agent",
+    limit: int = 25,
+    offset: int = 0,
+    include_inactive: bool = False,
+) -> dict[str, Any]:
+    """List recent memories in a category with simple pagination for inspection workflows."""
+    require_category(category)
+    if limit < 1 or limit > 250:
+        raise ValueError("limit must be between 1 and 250")
+    if offset < 0:
+        raise ValueError("offset must be zero or greater")
+    return await service.list_memories(category, limit, include_inactive, offset)
+
+
+@mcp.tool()
+async def memory_overview(sample_limit: int = 10) -> dict[str, Any]:
+    """Return a compact category overview and recent memory sample."""
+    if sample_limit < 1 or sample_limit > 100:
+        raise ValueError("sample_limit must be between 1 and 100")
+    return await service.overview(sample_limit)
+
+
+@mcp.tool()
+async def memory_queue_status() -> dict[str, Any]:
+    """Return embedding and enrichment backlog counts by category."""
+    return await service.queue_status()
+
+
+@mcp.tool()
 async def memory_supersede(
     previous_category: str,
     previous_id: str,
@@ -570,15 +606,20 @@ async def queue_status() -> dict[str, Any]:
 
 @app.get("/v1/memories/{category}", dependencies=[Depends(require_gateway_token)])
 async def list_memories(
-    category: str, limit: int = 25, include_inactive: bool = False
+    category: str, limit: int = 25, include_inactive: bool = False, offset: int = 0
 ) -> dict[str, Any]:
     require_category(category)
-    if limit < 1 or limit > 100:
+    if limit < 1 or limit > 250:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="limit must be between 1 and 100",
+            detail="limit must be between 1 and 250",
         )
-    return await service.list_memories(category, limit, include_inactive)
+    if offset < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="offset must be zero or greater",
+        )
+    return await service.list_memories(category, limit, include_inactive, offset)
 
 
 @app.patch("/v1/memories/{category}/{memory_id}", dependencies=[Depends(require_gateway_token)])

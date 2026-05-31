@@ -29,6 +29,25 @@ class FakeBackend:
                     },
                 ]
             }
+        if path == "/search-multi":
+            return {
+                "results": [
+                    {
+                        "id": "active-1",
+                        "category": "agent",
+                        "document": "active",
+                        "metadata": {},
+                        "distance": 0.2,
+                    },
+                    {
+                        "id": "hidden-1",
+                        "category": "agent",
+                        "document": "hidden",
+                        "metadata": {"lifecycle_status": "forgotten"},
+                        "distance": 0.1,
+                    },
+                ]
+            }
         return {"success": True}
 
     async def get(self, path: str, params: dict | None = None) -> dict:
@@ -92,9 +111,10 @@ def test_rest_lifecycle_and_auth(monkeypatch):
         assert overview["loaded_statuses"]["archived"] == 5
 
         listed = client.get(
-            "/v1/memories/agent?limit=10&include_inactive=false", headers=headers
+            "/v1/memories/agent?limit=10&offset=0&include_inactive=false", headers=headers
         ).json()
         assert [memory["id"] for memory in listed["memories"]] == ["recent-1"]
+        assert listed["offset"] == 0
 
 
 def test_streamable_http_mcp_lists_memory_tools(monkeypatch):
@@ -130,4 +150,7 @@ def test_streamable_http_mcp_lists_memory_tools(monkeypatch):
         assert tools.status_code == 200
         assert "memory_recall" in tools.text
         assert "memory_store" in tools.text
+        assert "memory_list" in tools.text
+        assert "memory_overview" in tools.text
+        assert "memory_queue_status" in tools.text
         assert "memory_forget" in tools.text

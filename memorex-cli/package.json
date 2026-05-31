@@ -1,5 +1,5 @@
 {
-  "name": "@personal-memory/memorex",
+  "name": "memory-hub-cli",
   "version": "0.1.0",
   "description": "CLI client for a Personal Memory Hub agent gateway",
   "type": "module",
@@ -10,6 +10,9 @@
     "bin",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },

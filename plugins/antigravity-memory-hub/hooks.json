@@ -1,0 +1,19 @@
+{
+  "memory-hub": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./hooks/memory-hub-hooks.mjs pre-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/memory-hub-hooks.mjs stop",
+        "timeout": 10
+      }
+    ]
+  }
+}

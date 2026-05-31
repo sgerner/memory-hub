@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "memory-hub": {
+      "command": "node",
+      "args": ["scripts/memory-hub-mcp.mjs"],
+      "env": {
+        "MEMORY_GATEWAY_URL": "${MEMORY_GATEWAY_URL}",
+        "MEMORY_GATEWAY_TOKEN": "${MEMORY_GATEWAY_TOKEN}",
+        "MEMORY_ADMIN_TOKEN": "${MEMORY_ADMIN_TOKEN}",
+        "MEMORY_AGENT_NAME": "codex"
+      }
+    }
+  }
+}
