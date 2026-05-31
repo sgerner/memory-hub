@@ -97,9 +97,11 @@ services:
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
     depends_on:
-      - agentmemory
+      - memory-db
+      - ollama
     networks:
       - memory-internal
+      - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 

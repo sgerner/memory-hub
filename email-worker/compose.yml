@@ -19,4 +19,4 @@ services:
 
 networks:
   memory-internal:
-    driver: bridge
+    external: true

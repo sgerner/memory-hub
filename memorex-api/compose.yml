@@ -93,4 +93,7 @@ services:
 
 networks:
   memory-internal:
-    driver: bridge
+    name: ${MEMORY_NETWORK_NAME:-memory-internal}
+    external: true
+  proxy:
+    external: true

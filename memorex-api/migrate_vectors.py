@@ -35,6 +35,8 @@ EMBED_CHUNK_OVERLAP = int(os.getenv("EMBED_CHUNK_OVERLAP", "150"))
 EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
 GEMINI_RETRY_SLEEP_SECONDS = float(os.getenv("GEMINI_RETRY_SLEEP_SECONDS", "2"))
+DB_RETRY_INITIAL_DELAY_SECONDS = float(os.getenv("DB_RETRY_INITIAL_DELAY_SECONDS", "2"))
+DB_RETRY_MAX_DELAY_SECONDS = float(os.getenv("DB_RETRY_MAX_DELAY_SECONDS", "30"))
 INTERNAL_CONTROL_COLUMNS = {
     "embedding_source_text": "TEXT",
     "embedding_status": "TEXT",
@@ -68,6 +70,19 @@ def get_db_connection():
         port=POSTGRES_PORT,
         cursor_factory=RealDictCursor,
     )
+
+
+async def connect_db_with_retry():
+    delay = max(0.5, DB_RETRY_INITIAL_DELAY_SECONDS)
+    attempt = 0
+    while True:
+        try:
+            return get_db_connection()
+        except Exception as exc:
+            attempt += 1
+            print(f"Postgres connection error (attempt {attempt}): {exc}. Retrying in {delay:.1f}s...")
+            await asyncio.sleep(delay)
+            delay = min(DB_RETRY_MAX_DELAY_SECONDS, max(delay * 2, 0.5))
 
 
 def ensure_tracking_columns(conn, table_name: str):
@@ -265,7 +280,7 @@ async def migrate_table(category):
     table_name = f"memory_{category}"
     print(f"\n--- Processing {table_name} ---")
 
-    conn = get_db_connection()
+    conn = await connect_db_with_retry()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
@@ -491,7 +506,7 @@ async def main():
 
         any_left = False
         due_left = False
-        conn = get_db_connection()
+        conn = await connect_db_with_retry()
         try:
             with conn.cursor() as cur:
                 for category in categories:
