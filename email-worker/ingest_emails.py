@@ -275,19 +275,22 @@ def process_account(account, settings):
                             save_state(state)
                             messages_processed += 1
                         else:
-                            logger.warning("Memory backend is busy; deferring remaining email messages until the next cycle.")
+                            logger.warning(
+                                "Memory backend is busy; deferring remaining email messages for this account until the next cycle."
+                            )
                             save_status({
                                 "service": "email-worker",
                                 "status": "deferred",
                                 "current_account": name,
                                 "last_cycle_started_at": started_at,
                                 "last_cycle_finished_at": utc_now(),
+                                "last_error": "Memory backend is unavailable; remaining messages were deferred.",
                                 "items_processed": messages_processed,
                                 "items_total": len(uids_to_process),
                                 "details": {"folders_seen": folders_seen},
                                 "updated_at": utc_now(),
                             })
-                            return False
+                            return True
                     except Exception as e:
                         logger.error(f"Error processing email UID {uid}: {e}")
             

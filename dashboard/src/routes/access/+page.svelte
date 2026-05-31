@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { fade, fly } from 'svelte/transition';
+	import { fade } from 'svelte/transition';
 
 	let { data } = $props();
 	let copied = $state(false);
 	let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const cliInstall = () => `npm install -g memory-hub-cli
-export MEMOREX_URL=https://your-memory-domain.example
+export MEMOREX_URL=${data.gatewayUrl || 'https://your-memory-domain.example'}
 export MEMOREX_TOKEN=${data.gatewayToken || 'your_gateway_token'}
 
 memorex recall "What decisions did I make about authentication?"
@@ -16,12 +16,12 @@ memorex queue`;
 
 	const pluginInstall = `curl -fsSL https://raw.githubusercontent.com/sgerner/memory-hub/main/scripts/install-agent-plugins.sh | bash`;
 
-	const mcpRemote = `{
+	const mcpRemote = () => `{
   "mcpServers": {
     "memory-hub": {
-      "url": "https://your-memory-domain.example/mcp",
+      "url": "${data.gatewayUrl || 'https://your-memory-domain.example'}/mcp",
       "headers": {
-        "Authorization": "Bearer your_gateway_token"
+        "Authorization": "Bearer ${data.gatewayToken || 'your_gateway_token'}"
       }
     }
   }
@@ -62,119 +62,132 @@ Available tools:
 </svelte:head>
 
 <main class="shell pb-24 pt-8 md:pt-12 max-w-5xl">
-	<div class="mb-8 md:mb-10 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+	<!-- Page Header -->
+	<div class="mb-12 border-b border-white/10 pb-6 flex flex-col md:flex-row md:items-end justify-between gap-6">
 		<div>
-			<p class="section-label mb-1">Access</p>
-			<h1 class="text-3xl md:text-4xl font-bold text-surface-50">CLI, MCP, and agent instructions</h1>
-			<p class="mt-3 max-w-2xl text-sm md:text-base text-surface-400">
-				Use this page as the quick start for agents and operators that need to connect to the memory hub from the terminal, from remote devices, or from an agents.md file.
+			<span class="section-label">Access</span>
+			<h1 class="text-3xl font-bold text-surface-50 mt-1">Connection & Integration</h1>
+			<p class="text-xs font-mono text-surface-500 mt-2 max-w-2xl">
+				Operator quick-start and agent configuration parameters for CLI tools, MCP clients, and instructions.
 			</p>
 		</div>
-		<a href="/settings" class="ghost-btn self-start">Open settings</a>
+		<a href="/settings" class="ghost-btn self-start md:self-center">Open settings</a>
 	</div>
 
-	<section class="mb-4 border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-		<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-			<div class="max-w-3xl">
-				<p class="section-label">Gateway token</p>
-				<h2 class="mt-2 text-xl font-semibold text-surface-50">Authentication token for CLI, MCP, and plugins</h2>
-				<p class="mt-3 text-sm text-surface-400">
-					This is the token the local CLI, remote MCP clients, and agent plugins use to talk to Memory Hub through the gateway.
+	<!-- Gateway Token Section -->
+	<section class="border-b border-white/10 pb-8 mb-12" transition:fade={{ duration: 160 }}>
+		<div class="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-6">
+			<div>
+				<p class="font-mono text-[0.62rem] font-bold tracking-[0.2em] uppercase text-primary-400">Gateway Token</p>
+				<h2 class="text-base font-semibold text-surface-100 mt-1">Authentication Credentials</h2>
+				<p class="font-mono text-[0.68rem] text-surface-500 mt-1 max-w-xl">
+					Pass this bearer token via request authorization headers to access gateway endpoints from remote clients.
 				</p>
 			</div>
-			<div class="flex items-center gap-2 self-start">
-				<span class="status-pill {data.gatewayToken ? 'active' : 'archived'}">
-					{data.gatewayToken ? 'configured' : 'missing'}
+			<div class="flex items-center gap-3">
+				<span class="status-pill {data.gatewayToken ? 'active' : 'forgotten'}">
+					{data.gatewayToken ? 'active' : 'missing'}
 				</span>
 				<button class="btn-primary" type="button" onclick={copyToken} disabled={!data.gatewayToken}>
-					{copied ? 'Copied' : 'Copy token'}
+					{copied ? 'copied' : 'copy token'}
 				</button>
 			</div>
 		</div>
 
-		<div class="mt-5 border border-white/10 bg-black/30 p-4">
-			<p class="mb-2 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-surface-500">MEMORY_GATEWAY_TOKEN</p>
-			<code class="block break-all font-mono text-sm text-surface-100">
-				{data.gatewayToken || 'Set MEMORY_GATEWAY_TOKEN in the dashboard container environment.'}
+		<div class="bg-[#030508]/50 border border-white/5 p-4 font-mono text-xs">
+			<span class="text-surface-500 block mb-1 text-[0.55rem] tracking-wider">GATEWAY_BEARER_TOKEN</span>
+			<code class="text-surface-200 break-all select-all font-mono font-medium">
+				{data.gatewayToken || 'Set MEMORY_GATEWAY_TOKEN in target system environments.'}
 			</code>
 		</div>
 	</section>
 
-	<div class="grid gap-4 lg:grid-cols-3">
-		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-			<div class="flex items-center justify-between gap-4 mb-5">
-				<div>
-					<p class="section-label">CLI</p>
-					<h2 class="mt-2 text-xl font-semibold text-surface-50">Install and use `memorex`</h2>
-				</div>
+	<!-- Integration Grid -->
+	<div class="grid gap-8 md:grid-cols-2 lg:grid-cols-3 mb-12">
+		<!-- Operator CLI -->
+		<div class="space-y-4">
+			<div class="flex items-baseline justify-between border-b border-white/5 pb-2">
+				<span class="section-label">Operator CLI</span>
 				<span class="status-pill active">npm package</span>
 			</div>
-			<p class="text-sm text-surface-400 mb-4">
-				Publish the CLI once, then install it anywhere with npm. Point it at the gateway, not the backend.
+			<h3 class="text-lg font-bold text-surface-50 mt-2">Use `memorex`</h3>
+			<p class="font-mono text-[0.68rem] text-surface-500 leading-normal">
+				Global command line operator for querying, listing, and committing facts directly from your terminal.
 			</p>
-			<pre class="overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{cliInstall()}</code></pre>
-		</section>
+			<pre class="bg-[#030508]/50 border border-white/5 p-4 text-[0.68rem] font-mono leading-5 text-surface-200 overflow-x-auto no-scrollbar"><code>{cliInstall()}</code></pre>
+		</div>
 
-		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-			<div class="flex items-center justify-between gap-4 mb-5">
-				<div>
-					<p class="section-label">Plugins</p>
-					<h2 class="mt-2 text-xl font-semibold text-surface-50">Install agent plugins</h2>
-				</div>
+		<!-- Agent Plugins -->
+		<div class="space-y-4">
+			<div class="flex items-baseline justify-between border-b border-white/5 pb-2">
+				<span class="section-label">Agent Plugins</span>
 				<span class="status-pill active">one command</span>
 			</div>
-			<p class="text-sm text-surface-400 mb-4">
-				Runs the supported installer for Codex, Antigravity, and OpenCode on any machine that has those CLIs installed.
+			<h3 class="text-lg font-bold text-surface-50 mt-2">Automated Installer</h3>
+			<p class="font-mono text-[0.68rem] text-surface-500 leading-normal">
+				One-line bootstrap command to configure Memory Hub integration scripts for Codex, Antigravity, and OpenCode.
 			</p>
-			<pre class="overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{pluginInstall}</code></pre>
-		</section>
+			<pre class="bg-[#030508]/50 border border-white/5 p-4 text-[0.68rem] font-mono leading-5 text-surface-200 overflow-x-auto no-scrollbar"><code>{pluginInstall}</code></pre>
+		</div>
 
-		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-			<div class="flex items-center justify-between gap-4 mb-5">
-				<div>
-					<p class="section-label">Remote MCP</p>
-					<h2 class="mt-2 text-xl font-semibold text-surface-50">Connect from other devices</h2>
-				</div>
-				<span class="status-pill running">streamable http</span>
+		<!-- Remote MCP -->
+		<div class="space-y-4">
+			<div class="flex items-baseline justify-between border-b border-white/5 pb-2">
+				<span class="section-label">Remote MCP</span>
+				<span class="status-pill running">http transport</span>
 			</div>
-			<ul class="space-y-3 text-sm text-surface-400">
-				<li>Use the public gateway origin plus `/mcp`.</li>
-				<li>Send `Authorization: Bearer <code>&lt;copy the token above&gt;</code>` on every request.</li>
-				<li>Expose the route through your reverse proxy and keep auth headers intact.</li>
-			</ul>
-			<pre class="mt-5 overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{mcpRemote}</code></pre>
-		</section>
+			<h3 class="text-lg font-bold text-surface-50 mt-2">Connect Remote Clients</h3>
+			<p class="font-mono text-[0.68rem] text-surface-500 leading-normal">
+				Configure Model Context Protocol clients (e.g. Claude Desktop) on other devices to discover local memory tools.
+			</p>
+			<pre class="bg-[#030508]/50 border border-white/5 p-4 text-[0.68rem] font-mono leading-5 text-surface-200 overflow-x-auto no-scrollbar"><code>{mcpRemote()}</code></pre>
+		</div>
 	</div>
 
-	<div class="grid gap-4 lg:grid-cols-2 mt-4">
-		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-			<div class="flex items-center justify-between gap-4 mb-5">
-				<div>
-					<p class="section-label">Agents</p>
-					<h2 class="mt-2 text-xl font-semibold text-surface-50">Prompt snippet for `agents.md`</h2>
-				</div>
-				<span class="status-pill warn">drop-in</span>
+	<!-- System Prompt / cognitive guidelines -->
+	<div class="border-t border-white/10 pt-8 grid gap-8 md:grid-cols-2">
+		<!-- System Prompt Snippet -->
+		<div class="space-y-4">
+			<div class="flex items-baseline justify-between border-b border-white/5 pb-2">
+				<span class="section-label">Instructions</span>
+				<span class="status-pill archived">agents.md</span>
 			</div>
-			<p class="text-sm text-surface-400 mb-4">
-				This is short enough to paste into an agent instructions file, while still telling the agent how to use the memory layer.
+			<h3 class="text-lg font-bold text-surface-50 mt-2">System Instructions</h3>
+			<p class="font-mono text-[0.68rem] text-surface-500 leading-normal">
+				Inject this snippet into your agent's system prompt or workspace context file to enable standard tool usage.
 			</p>
-			<pre class="overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{agentSnippet}</code></pre>
-		</section>
+			<pre class="bg-[#030508]/50 border border-white/5 p-4 text-[0.68rem] font-mono leading-5 text-surface-200 overflow-x-auto no-scrollbar max-h-96"><code>{agentSnippet}</code></pre>
+		</div>
 
-		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
-			<div class="flex items-center justify-between gap-4 mb-5">
-				<div>
-					<p class="section-label">Agent Flow</p>
-					<h2 class="mt-2 text-xl font-semibold text-surface-50">What agents should do</h2>
+		<!-- Workflow guidelines -->
+		<div class="space-y-4">
+			<div class="flex items-baseline justify-between border-b border-white/5 pb-2">
+				<span class="section-label">Cognitive Flow</span>
+				<span class="status-pill active">best practices</span>
+			</div>
+			<h3 class="text-lg font-bold text-surface-50 mt-2">Memory Lifecycle Rules</h3>
+			<p class="font-mono text-[0.68rem] text-surface-500 leading-normal">
+				Standard operating instructions for agents managing system memories during tasks.
+			</p>
+
+			<div class="space-y-3.5 pt-2">
+				<div class="flex gap-3">
+					<span class="font-mono text-[0.7rem] text-primary-400">01 /</span>
+					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Recall Context First:</span> Always query relevant memories before formulating complex plans or answers.</p>
 				</div>
-				<span class="status-pill idle">workflow</span>
+				<div class="flex gap-3 border-t border-white/5 pt-3.5">
+					<span class="font-mono text-[0.7rem] text-primary-400">02 /</span>
+					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Commit Confirmed Facts:</span> Save durable preferences, key project structures, and confirmed facts during steps.</p>
+				</div>
+				<div class="flex gap-3 border-t border-white/5 pt-3.5">
+					<span class="font-mono text-[0.7rem] text-primary-400">03 /</span>
+					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Decay & Supersede:</span> Proactively archive stale preferences, update obsoleted logic, and clean the backlog.</p>
+				</div>
+				<div class="flex gap-3 border-t border-white/5 pt-3.5">
+					<span class="font-mono text-[0.7rem] text-primary-400">04 /</span>
+					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Gateway Focus:</span> Route queries and commits via the Model Context Protocol (MCP) or CLI layers instead of direct DB insertions.</p>
+				</div>
 			</div>
-			<div class="space-y-4 text-sm text-surface-300 leading-7">
-				<p>1. Recall relevant memories before answering or planning work.</p>
-				<p>2. Store durable facts, preferences, decisions, and procedures after they are confirmed.</p>
-				<p>3. Use `memory_list` for direct inspection, `memory_archive` for stale items, and `memory_queue_status` for backlog awareness.</p>
-				<p>4. Prefer the gateway and MCP tools over direct database access.</p>
-			</div>
-		</section>
+		</div>
 	</div>
 </main>
