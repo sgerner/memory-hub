@@ -20,6 +20,5 @@
       "Store durable facts, preferences, and decisions after confirmation.",
       "Use queue status when the task depends on backlog health."
     ]
-  },
-  "mcpServers": "./.mcp.json"
+  }
 }

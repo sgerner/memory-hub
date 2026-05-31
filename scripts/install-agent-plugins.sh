@@ -77,11 +77,15 @@ prepare_source_tree() {
 prepare_runtime_env() {
   local existing_url=""
   local existing_token=""
+  local existing_admin=""
   if [[ -f "$MEMORY_HUB_ENV_FILE" ]]; then
+    set -a
     # shellcheck disable=SC1090
     source "$MEMORY_HUB_ENV_FILE" || true
+    set +a
     existing_url="${MEMORY_GATEWAY_URL:-}"
     existing_token="${MEMORY_GATEWAY_TOKEN:-}"
+    existing_admin="${MEMORY_ADMIN_TOKEN:-}"
   fi
 
   local gateway_url gateway_token
@@ -95,13 +99,18 @@ prepare_runtime_env() {
 
   mkdir -p "$MEMORY_HUB_ENV_DIR"
   umask 077
-  cat >"$MEMORY_HUB_ENV_FILE" <<EOF
-MEMORY_GATEWAY_URL=$gateway_url
-MEMORY_GATEWAY_TOKEN=$gateway_token
-EOF
+  {
+    printf 'export MEMORY_GATEWAY_URL=%q\n' "$gateway_url"
+    printf 'export MEMORY_GATEWAY_TOKEN=%q\n' "$gateway_token"
+    if [[ -n "$existing_admin" ]]; then
+      printf 'export MEMORY_ADMIN_TOKEN=%q\n' "$existing_admin"
+    fi
+  } >"$MEMORY_HUB_ENV_FILE"
 
   # shellcheck disable=SC1090
+  set -a
   source "$MEMORY_HUB_ENV_FILE"
+  set +a
   log "Wrote environment file to $MEMORY_HUB_ENV_FILE"
 
   local source_line="source \"$MEMORY_HUB_ENV_FILE\""
@@ -243,6 +252,7 @@ main() {
 
   ensure_node_modules "$CODEX_BUNDLE_DIR"
   ensure_node_modules "$ANTIGRAVITY_BUNDLE_DIR"
+  chmod +x "$CODEX_BUNDLE_DIR/scripts/memory-hub-launch.sh" "$ANTIGRAVITY_BUNDLE_DIR/scripts/memory-hub-launch.sh"
 
   install_codex
   install_antigravity

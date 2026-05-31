@@ -34,6 +34,37 @@ function clip(text, limit = 220) {
   return `${flattened.slice(0, limit - 1)}…`;
 }
 
+function responsePreview(text) {
+  const flattened = String(text || '').replace(/\s+/g, ' ').trim();
+  return flattened.length > 300 ? `${flattened.slice(0, 299)}…` : flattened;
+}
+
+async function readJsonResponse(response, path) {
+  const text = await response.text();
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok) {
+    throw new Error(
+      `Gateway ${response.status} ${response.statusText}${text ? `: ${responsePreview(text)}` : ''}`
+    );
+  }
+
+  if (!text) {
+    return {};
+  }
+
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `Gateway ${path} returned ${contentType || 'unknown content type'} instead of JSON: ${responsePreview(text)}`
+    );
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Gateway ${path} returned invalid JSON: ${error.message}. Body: ${responsePreview(text)}`);
+  }
+}
+
 function turnFile(pluginData, turnId) {
   return path.join(pluginData, 'turns', `${sanitizeSegment(turnId)}.json`);
 }
@@ -99,13 +130,7 @@ async function gatewayRequest(pathname, { method = 'GET', body, auth = true, adm
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Gateway ${response.status} ${response.statusText}${text ? `: ${text.slice(0, 1000)}` : ''}`
-        );
-      }
-      return text ? JSON.parse(text) : {};
+      return await readJsonResponse(response, pathname);
     } catch (error) {
       lastError = error;
       const cause = error?.cause?.code || error?.code || error?.name || '';
