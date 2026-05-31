@@ -1,9 +1,13 @@
 <script lang="ts">
 	import { fade, fly } from 'svelte/transition';
 
-	const cliInstall = `npm install -g memory-hub-cli
+	let { data } = $props();
+	let copied = $state(false);
+	let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const cliInstall = () => `npm install -g memory-hub-cli
 export MEMOREX_URL=https://your-memory-domain.example
-export MEMOREX_TOKEN=your_gateway_token
+export MEMOREX_TOKEN=${data.gatewayToken || 'your_gateway_token'}
 
 memorex recall "What decisions did I make about authentication?"
 memorex store "Prefer migration scripts to manual schema edits." --kind preference --retention durable
@@ -40,6 +44,17 @@ Available tools:
 - memory_forget
 - memory_overview
 - memory_queue_status`;
+
+	const copyToken = async () => {
+		if (!data.gatewayToken) return;
+		await navigator.clipboard.writeText(data.gatewayToken);
+		copied = true;
+		if (copyTimer) clearTimeout(copyTimer);
+		copyTimer = setTimeout(() => {
+			copied = false;
+			copyTimer = null;
+		}, 1500);
+	};
 </script>
 
 <svelte:head>
@@ -58,6 +73,33 @@ Available tools:
 		<a href="/settings" class="ghost-btn self-start">Open settings</a>
 	</div>
 
+	<section class="mb-4 border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
+		<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+			<div class="max-w-3xl">
+				<p class="section-label">Gateway token</p>
+				<h2 class="mt-2 text-xl font-semibold text-surface-50">Authentication token for CLI, MCP, and plugins</h2>
+				<p class="mt-3 text-sm text-surface-400">
+					This is the token the local CLI, remote MCP clients, and agent plugins use to talk to Memory Hub through the gateway.
+				</p>
+			</div>
+			<div class="flex items-center gap-2 self-start">
+				<span class="status-pill {data.gatewayToken ? 'active' : 'archived'}">
+					{data.gatewayToken ? 'configured' : 'missing'}
+				</span>
+				<button class="btn-primary" type="button" onclick={copyToken} disabled={!data.gatewayToken}>
+					{copied ? 'Copied' : 'Copy token'}
+				</button>
+			</div>
+		</div>
+
+		<div class="mt-5 border border-white/10 bg-black/30 p-4">
+			<p class="mb-2 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-surface-500">MEMORY_GATEWAY_TOKEN</p>
+			<code class="block break-all font-mono text-sm text-surface-100">
+				{data.gatewayToken || 'Set MEMORY_GATEWAY_TOKEN in the dashboard container environment.'}
+			</code>
+		</div>
+	</section>
+
 	<div class="grid gap-4 lg:grid-cols-3">
 		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
 			<div class="flex items-center justify-between gap-4 mb-5">
@@ -70,7 +112,7 @@ Available tools:
 			<p class="text-sm text-surface-400 mb-4">
 				Publish the CLI once, then install it anywhere with npm. Point it at the gateway, not the backend.
 			</p>
-			<pre class="overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{cliInstall}</code></pre>
+			<pre class="overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{cliInstall()}</code></pre>
 		</section>
 
 		<section class="border border-white/10 bg-white/[0.03] p-6 md:p-7" transition:fade={{ duration: 160 }}>
@@ -97,7 +139,7 @@ Available tools:
 			</div>
 			<ul class="space-y-3 text-sm text-surface-400">
 				<li>Use the public gateway origin plus `/mcp`.</li>
-				<li>Send `Authorization: Bearer <code>&lt;gateway token&gt;</code>` on every request.</li>
+				<li>Send `Authorization: Bearer <code>&lt;copy the token above&gt;</code>` on every request.</li>
 				<li>Expose the route through your reverse proxy and keep auth headers intact.</li>
 			</ul>
 			<pre class="mt-5 overflow-x-auto border border-white/10 bg-black/30 p-4 text-[0.72rem] leading-6 text-surface-200 no-scrollbar" transition:fly={{ y: 8, duration: 140 }}><code>{mcpRemote}</code></pre>
