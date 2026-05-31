@@ -5,6 +5,8 @@ REPO_URL="${MEMORY_HUB_REPO_URL:-https://github.com/sgerner/memory-hub.git}"
 REPO_REF="${MEMORY_HUB_REPO_REF:-main}"
 INSTALL_BASE="${MEMORY_HUB_INSTALL_BASE:-$HOME}"
 INSTALL_DIR="$INSTALL_BASE/plugins"
+MEMORY_HUB_ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/memory-hub"
+MEMORY_HUB_ENV_FILE="$MEMORY_HUB_ENV_DIR/agent.env"
 OPENCODE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 CODEX_MARKETPLACE_DIR="$HOME/.agents/plugins"
 CODEX_MARKETPLACE_FILE="$CODEX_MARKETPLACE_DIR/marketplace.json"
@@ -18,6 +20,22 @@ log() {
 
 have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+prompt_value() {
+  local label="$1"
+  local current="${2:-}"
+  local value=""
+  if [[ -n "$current" ]]; then
+    printf '%s [%s]: ' "$label" "$current" >&2
+  else
+    printf '%s: ' "$label" >&2
+  fi
+  IFS= read -r value
+  if [[ -z "$value" ]]; then
+    value="$current"
+  fi
+  printf '%s\n' "$value"
 }
 
 repo_root_from_script() {
@@ -50,6 +68,51 @@ prepare_source_tree() {
   trap 'rm -rf "$tmp_dir"' EXIT
   git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$tmp_dir/repo" >/dev/null
   printf '%s\n' "$tmp_dir/repo"
+}
+
+prepare_runtime_env() {
+  local existing_url=""
+  local existing_token=""
+  if [[ -f "$MEMORY_HUB_ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$MEMORY_HUB_ENV_FILE" || true
+    existing_url="${MEMORY_GATEWAY_URL:-}"
+    existing_token="${MEMORY_GATEWAY_TOKEN:-}"
+  fi
+
+  local gateway_url gateway_token
+  gateway_url="$(prompt_value "Memory Hub gateway URL" "${existing_url:-http://127.0.0.1:3112}")"
+  gateway_token="$(prompt_value "Memory Hub gateway token" "${existing_token:-}")"
+
+  if [[ -z "$gateway_url" || -z "$gateway_token" ]]; then
+    log "Gateway URL and token are required."
+    exit 1
+  fi
+
+  mkdir -p "$MEMORY_HUB_ENV_DIR"
+  umask 077
+  cat >"$MEMORY_HUB_ENV_FILE" <<EOF
+MEMORY_GATEWAY_URL=$gateway_url
+MEMORY_GATEWAY_TOKEN=$gateway_token
+EOF
+
+  # shellcheck disable=SC1090
+  source "$MEMORY_HUB_ENV_FILE"
+  log "Wrote environment file to $MEMORY_HUB_ENV_FILE"
+
+  local source_line="source \"$MEMORY_HUB_ENV_FILE\""
+  for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.profile"; do
+    if [[ ! -e "$rc_file" ]]; then
+      : > "$rc_file"
+    fi
+    if ! grep -Fqs "$source_line" "$rc_file"; then
+      {
+        printf '\n# Memory Hub agent environment\n'
+        printf '%s\n' "$source_line"
+      } >> "$rc_file"
+      log "Added Memory Hub env source line to $rc_file"
+    fi
+  done
 }
 
 copy_bundle() {
@@ -167,6 +230,7 @@ PY
 main() {
   local source_root
   source_root="$(prepare_source_tree)"
+  prepare_runtime_env
 
   mkdir -p "$INSTALL_DIR"
   copy_bundle "$source_root/plugins/memory-hub" "$CODEX_BUNDLE_DIR"
