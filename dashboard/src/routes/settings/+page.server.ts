@@ -148,17 +148,26 @@ export const actions: Actions = {
 	},
 	email_account: async ({ request }) => {
 		const input = await request.formData();
-		const mode = String(input.get('mode') ?? 'save');
+		const modeValues = input.getAll('mode').map((value) => String(value).trim()).filter(Boolean);
+		const mode = modeValues.length > 0 ? modeValues[modeValues.length - 1] : 'save';
 		const originalName = String(input.get('original_name') ?? '').trim();
 		const name = String(input.get('name') ?? '').trim();
 		try {
 			const accounts = await loadEmailAccounts();
 			if (mode === 'delete') {
-				if (!originalName) {
+				const targetName = originalName || name;
+				if (!targetName) {
 					return fail(400, { operation: 'email_account', message: 'Missing account name.' });
 				}
-				await saveEmailAccounts(accounts.filter((account) => account.name !== originalName));
-				return { operation: 'email_account', message: `Email account ${originalName} removed.` };
+				const nextAccounts = accounts.filter((account) => account.name.trim() !== targetName);
+				if (nextAccounts.length === accounts.length) {
+					return fail(404, {
+						operation: 'email_account',
+						message: `Email account ${targetName} was not found.`
+					});
+				}
+				await saveEmailAccounts(nextAccounts);
+				return { operation: 'email_account', message: `Email account ${targetName} removed.` };
 			}
 			const host = String(input.get('host') ?? '').trim();
 			const user = String(input.get('user') ?? '').trim();
@@ -171,6 +180,15 @@ export const actions: Actions = {
 				});
 			}
 			const existing = accounts.find((account) => account.name === originalName);
+			const port = Number(input.get('port') ?? existing?.port ?? 993);
+			if (!Number.isInteger(port) || port < 1 || port > 65535) {
+				return fail(400, {
+					operation: 'email_account',
+					message: 'IMAP port must be an integer from 1 to 65535.'
+				});
+			}
+			const sslInput = input.get('ssl');
+			const ssl = sslInput === null ? (existing?.ssl ?? true) : sslInput === 'on' || sslInput === 'true' || sslInput === '1';
 			const nextPassword = password.trim() || existing?.password;
 			if (!nextPassword) {
 				return fail(400, {
@@ -182,6 +200,8 @@ export const actions: Actions = {
 			filtered.push({
 				name,
 				host,
+				port,
+				ssl,
 				user,
 				password: nextPassword,
 				folder: folder || null

@@ -1,11 +1,11 @@
 # Memory Hub
 
-Memory Hub is the full memory feature stack for personal and coding agents. It includes the backend, database, local embedding path, enrichment workers, ingestion workers, gateway, dashboard, and CLI in one repository.
+Memory Hub is the full memory feature stack for personal and coding agents. It includes the backend, queue-based embedding worker, enrichment worker, ingestion workers, gateway, dashboard, CLI, and the local data layout needed to run and restore the system from one repository.
 
-The repo is designed to support two real deployment modes:
+The repo supports two deployment modes:
 
-1. Self-host everything locally.
-2. Attach the workers and gateway to backend services that already exist elsewhere.
+1. Run everything locally.
+2. Attach the gateway, dashboard, and workers to backend services that already exist elsewhere.
 
 It does **not** hardcode a domain. Set your own public origin if you put a reverse proxy in front of it.
 
@@ -13,15 +13,19 @@ It does **not** hardcode a domain. Set your own public origin if you put a rever
 
 | Component | Purpose | Path |
 | --- | --- | --- |
-| `memorex-api` | Memorex backend API, vector search, embedding queue, backup staging | `memorex-api/` |
-| `agent-gateway` | Agent-facing REST and Streamable HTTP MCP gateway | `agent-gateway/` |
-| `dashboard` | Svelte 5 / Skeleton operator UI | `dashboard/` |
+| `memory-db` | Optional local Postgres database | `compose.yml` |
+| `ollama` | Optional local embedding runtime | `compose.yml` |
+| `agentmemory` | Memorex backend API, vector search, queue state, health endpoint, and backup staging hooks | `memorex-api/` |
+| `embedding-worker` | Steady-state DB-backed embedding consumer and backfill worker | `compose.yml`, `memorex-api/migrate_vectors.py` |
+| `backup-stager` | Daily PostgreSQL dump and settings snapshot writer | `compose.yml`, `memorex-api/backup.sh` |
+| `memory-agent-gateway` | Agent-facing REST API and Streamable HTTP MCP gateway | `agent-gateway/` |
+| `memory-dashboard` | Svelte 5 / Skeleton operator UI | `dashboard/` |
 | `docs-worker` | Documents ingestion from mounted source trees | `docs-worker/` |
 | `email-worker` | IMAP ingestion and attachment extraction | `email-worker/` |
 | `obsidian-worker` | Obsidian vault synchronization | `obsidian-worker/` |
 | `github-worker` | GitHub ingestion | `github-worker/` |
-| `enricher-worker` | Remote summarization + local re-embedding | `enricher-worker/` |
-| `memorex-cli` | Small CLI wrapper around the gateway | `memorex-cli/` |
+| `enricher-worker` | Remote summarization and metadata enrichment | `enricher-worker/` |
+| `memorex-cli` | Thin CLI wrapper around the gateway | `memorex-cli/` |
 
 ## What is not included
 
@@ -29,7 +33,8 @@ These are treated as edge infrastructure, not core memory logic:
 
 - Caddy or any other reverse proxy
 - Authentik or any other SSO provider
-- Cloudflare DDNS
+- Cloudflare DDNS or other DNS automation
+- A managed secret store
 
 You can front the dashboard and gateway with any edge stack you already run. The repo exposes the services on ports so that wiring is straightforward.
 
@@ -39,31 +44,39 @@ This stack is intentionally opinionated.
 
 1. The backend is the source of truth
 
-   Memorex owns the database, lifecycle state, and vector search. The gateway and dashboard are thin control layers over it.
+   Memorex owns the database, lifecycle state, queue state, and vector search. The gateway and dashboard are thin control layers over it.
 
-2. Embeddings stay local
+2. Embedding is queue-driven
 
-   The backend generates embeddings through Ollama. Enrichment uses a remote LLM for metadata and summaries, then writes back through the backend so the local embedding is refreshed.
+   New records are written first and marked for embedding later. The embedding worker drains the database queue in the background so ingestion does not block on Ollama.
 
-3. Secrets are explicit and known
+3. Embeddings stay local by default
+
+   Ollama is the default embedding runtime. If you temporarily offload embeddings to a remote provider, treat that as an explicit runtime choice and do not change the vector schema unless you are ready to reindex.
+
+4. Enrichment is separate from embedding
+
+   Enrichment uses a remote LLM for summaries, metadata, and canonical text, then saves the result back through the backend so the final record can be re-embedded.
+
+5. Secrets are explicit and known
 
    The dashboard only exposes the secret keys the stack actually uses. There is no arbitrary secret editor.
 
-4. Runtime state is file-backed
+6. Runtime state is file-backed
 
-   Worker settings, state, secrets, statuses, and backups live under a shared host directory. That keeps the system inspectable and easy to back up.
+   Worker settings, worker status, secrets, source selections, and backup outputs live under a shared host directory. That keeps the system inspectable and easy to back up.
 
-5. Ingestion workers are independent
+7. Ingestion workers are independent
 
-   Documents, email, Obsidian, GitHub, and enrichment all run as separate workers. They can be pointed at an external backend or at the local backend in this repo.
+   Documents, email, Obsidian, GitHub, enrichment, and embedding all run as separate workers. They can be pointed at an external backend or at the local backend in this repo.
 
-6. The public hostname is configurable
+8. The public hostname is configurable
 
    The repo never assumes a fixed production hostname. Set your own origin if you want one.
 
-7. Existing services can be reused
+9. Existing services can be reused
 
-   If you already have a Memorex backend elsewhere, leave the local backend profile off and point `MEMORY_BACKEND_URL` at it. The local backend profile in this repo owns its own Postgres and Ollama pair.
+   If you already have Postgres, Ollama, or a Memorex backend elsewhere, leave the local backend profiles off and point the repo at those services instead of creating duplicates.
 
 ## Technical requirements
 
@@ -73,11 +86,45 @@ This stack is intentionally opinionated.
 - A writable runtime data directory
 - A writable ingest directory for documents and Obsidian
 
+The host does not need Python or Node installed unless you want to run local tooling outside Docker.
+
 Recommended host directories are configured through environment variables:
 
 - `MEMORY_DATA_DIR` for settings, worker state, backups, and persistent backend volumes
 - `MEMORY_INGEST_DIR` for document source mounts
 - `MEMORY_OBSIDIAN_DIR` for the Obsidian vault source
+
+## Configuration reference
+
+The stack is driven by `.env`. The most important values are:
+
+| Variable | Purpose |
+| --- | --- |
+| `MEMORY_DATA_DIR` | Root of runtime data: settings, status files, backups, database volume, and Ollama volume |
+| `MEMORY_INGEST_DIR` | Root of document source mounts such as `gdrive/` and `docs/` |
+| `MEMORY_OBSIDIAN_DIR` | Root of the Obsidian vault source |
+| `MEMORY_PUBLIC_ORIGIN` | Optional public URL for the dashboard or gateway behind a reverse proxy |
+| `AGENTMEMORY_TOKEN` | Backend bearer token used by workers and the gateway |
+| `MEMORY_BACKEND_URL` | Backend URL used by the gateway and dashboard |
+| `MEMORY_BACKEND_TOKEN` | Bearer token used by the gateway when calling the backend |
+| `MEMORY_GATEWAY_TOKEN` | Bearer token used by agents and the dashboard when calling the gateway |
+| `MEMORY_ADMIN_TOKEN` | Admin token used for privileged gateway operations |
+| `POSTGRES_*` | Database name, user, password, host, and port for the backend |
+| `OLLAMA_HOST` | Ollama endpoint used for local embeddings |
+| `DEFAULT_MODEL` | Default local embedding model |
+| `EMBEDDING_PROVIDER` | Embedding provider selector for the backend and embedding worker |
+| `GEMINI_API_KEY` | Optional Gemini embedding key for temporary offload or migration work |
+| `GEMINI_EMBED_MODEL` | Gemini embedding model name |
+| `GEMINI_OUTPUT_DIMENSIONALITY` | Gemini output size, kept aligned with the vector schema when used |
+| `LLM_BASE_URL` | Primary enrichment provider base URL |
+| `LLM_FREE_BASE_URL` | Fallback enrichment provider base URL |
+| `LLM_MODEL` | Primary enrichment model |
+| `LLM_API_KEY` | Primary enrichment token |
+| `LLM_FALLBACK_API_KEY` | Fallback enrichment token |
+| `BACKUP_INTERVAL_SECONDS` | Backup cadence, daily by default |
+| `BACKUP_RETENTION_DAYS` | How many days of backups to keep, 7 by default |
+
+The default templates in `defaults/` are copied into the runtime tree by `make init`.
 
 ## Bootstrap
 
@@ -110,17 +157,19 @@ By default this enables:
 - local Postgres
 - local Ollama
 - local Memorex backend
-- all workers
+- embedding worker
+- backup stager
+- all ingestion workers
 - gateway
 - dashboard
 
-If you already have a Memorex backend elsewhere, disable the local backend profile and point the repo at it:
+If you already have Memorex, Postgres, or Ollama running elsewhere, disable the local services and point the repo at the existing backend:
 
 ```bash
 LOCAL_BACKEND=0 LOCAL_DB=0 LOCAL_OLLAMA=0 make up
 ```
 
-In attach mode, set `MEMORY_BACKEND_URL` to the backend you already run.
+In attach mode, set `MEMORY_BACKEND_URL` to the backend you already run and make sure the gateway token matches what that backend expects.
 
 ## Compose model
 
@@ -161,7 +210,15 @@ The email worker also uses:
 
 - `email-worker/accounts.json`
 
-The default settings templates in `defaults/` are copied into this tree by `make init`.
+The status directory contains per-service snapshots such as:
+
+- `docs-worker.json`
+- `email-worker.json`
+- `obsidian-worker.json`
+- `github-worker.json`
+- `enricher-worker.json`
+- `embedding-worker.json`
+- `backup.json`
 
 ## Default document sources
 
@@ -192,7 +249,7 @@ There are three distinct trust boundaries:
 2. The gateway talks to the backend with its own bearer token.
 3. The backend token never needs to reach the browser.
 
-The gateway also supports MCP host/origin allowlists for browser-based clients.
+The gateway also supports MCP host and origin allowlists for browser-based clients.
 
 ## Backup
 
@@ -203,19 +260,35 @@ The included backup stager captures:
 - a manifest JSON with filenames and timestamps
 
 The backup output lands under `MEMORY_DATA_DIR/backups`.
-It runs on a daily cadence, keeps only the newest complete backup for each day, and prunes to a 7-day retention window by default.
+It runs on a daily cadence by default, keeps only the newest complete backup for each day, and prunes to a 7-day retention window.
+
+If you use Kopia as host-level backup storage, include at least:
+
+- `MEMORY_DATA_DIR`
+- `MEMORY_INGEST_DIR`
+- `MEMORY_OBSIDIAN_DIR`
+- any edge configuration you keep outside the repo, such as reverse proxy or SSO files
 
 ## Restore
 
-Repo source plus Kopia backups are enough to restore the core service state if the backup repository is still reachable and the secrets/settings snapshot is intact.
+The repository plus the backup snapshots can restore the core memory stack if the backup repository itself is still reachable and the external inputs below are available.
 
-That is not the whole disaster-recovery story yet. You still need:
+What you still need outside the repo:
 
-- the backup repository itself, stored off the failed host
+- the backup repository or storage target itself
 - the live `.env` values or an equivalent secrets restore path
-- any reverse-proxy, SSO, DNS, or DDNS configuration you used outside this repo
+- any reverse proxy, SSO, DNS, or DDNS configuration you used outside this repo
 - any local source trees under `MEMORY_INGEST_DIR` or `MEMORY_OBSIDIAN_DIR` if those are not re-created from remote systems
 - any worker state files you want to preserve for a clean resume, especially IMAP cursors and file state
+
+Restore order:
+
+1. Restore the runtime data and source trees.
+2. Restore or recreate `.env`.
+3. Restore the PostgreSQL dump into the backend database if you are using the local backend.
+4. Restore `settings/`, `status/`, and `email-worker/accounts.json`.
+5. Start the stack.
+6. Confirm the backend, gateway, dashboard, and workers are healthy.
 
 If your sources are remote, like Gmail, GitHub, or Google Drive, the repo plus the backups are usually enough to get the service back on its feet and let the workers resync. If your documents or Obsidian vault are only local, those trees need to be part of your backup plan as well.
 
@@ -223,8 +296,9 @@ If your sources are remote, like Gmail, GitHub, or Google Drive, the repo plus t
 
 - `compose.yml` for the overall stack shape
 - `defaults/` for bootstrap JSON
-- `memorex-api/main.py` for the backend and vector logic
+- `memorex-api/main.py` for the backend, embedding queue, and vector logic
 - `dashboard/src/routes/settings/+page.svelte` for operator controls
+- `dashboard/src/routes/+layout.svelte` for runtime observability
 - `agent-gateway/main.py` for the agent API and MCP layer
 
 ## CLI
@@ -247,5 +321,14 @@ Useful checks:
 make ps
 make logs
 ```
+
+You can also verify the running services directly:
+
+- `GET /health` on the backend at port `3111`
+- `GET /health` on the gateway at port `3112`
+- `GET /queue-status` through the gateway with the gateway token
+- a successful `npm run check` in `dashboard/`
+
+## Sharing this repo
 
 The repo is intended to be committed and shared as source. It should not contain live `.env` files or runtime data.

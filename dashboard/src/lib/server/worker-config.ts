@@ -13,6 +13,8 @@ import {
 export type EmailAccount = {
 	name: string;
 	host: string;
+	port?: number | null;
+	ssl?: boolean | null;
 	user: string;
 	password: string;
 	folder?: string | null;

@@ -1,7 +1,8 @@
 # `memorex`
 
-Command-line client for the Personal Memory Hub gateway REST API. Node.js 18 or newer is
-required; there are no runtime dependencies.
+Command-line client for the Personal Memory Hub gateway REST API. Point `MEMOREX_URL`
+at the gateway origin or public reverse-proxy origin, not directly at the backend.
+Node.js 18 or newer is required; there are no runtime dependencies.
 
 ```bash
 export MEMOREX_URL=https://your-memory-domain.example

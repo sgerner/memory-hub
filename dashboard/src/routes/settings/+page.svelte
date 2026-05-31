@@ -171,11 +171,13 @@
 						<details class="border-b group" style="border-color: var(--border-dim)">
 							<summary class="flex cursor-pointer list-none items-center justify-between gap-4 py-4 [&::-webkit-details-marker]:hidden">
 								<div>
-									<p class="text-sm font-semibold text-surface-100">{account.name}</p>
-									<p class="font-mono text-[0.62rem] text-surface-500 mt-0.5">{account.host} · {account.user}</p>
-								</div>
-								<span class="ghost-btn">configure</span>
-							</summary>
+											<p class="text-sm font-semibold text-surface-100">{account.name}</p>
+											<p class="font-mono text-[0.62rem] text-surface-500 mt-0.5">
+												{account.host}:{account.port ?? 993} · {account.ssl === false ? 'plain' : 'ssl/tls'} · {account.user}
+											</p>
+										</div>
+										<span class="ghost-btn">configure</span>
+									</summary>
 							<form
 								method="POST"
 								action="?/email_account"
@@ -189,7 +191,12 @@
 									<div><label class="field-label" for="ename-{account.name}">Account Name</label><input id="ename-{account.name}" class="field-input" name="name" value={account.name} required /></div>
 									<div><label class="field-label" for="ehost-{account.name}">IMAP Host</label><input id="ehost-{account.name}" class="field-input" name="host" value={account.host} required /></div>
 									<div><label class="field-label" for="euser-{account.name}">Username</label><input id="euser-{account.name}" class="field-input" name="user" value={account.user} required /></div>
+									<div><label class="field-label" for="eport-{account.name}">IMAP Port</label><input id="eport-{account.name}" class="field-input" type="number" name="port" min="1" max="65535" value={account.port ?? 993} required /></div>
 									<div><label class="field-label" for="efolder-{account.name}">Folder Filter</label><input id="efolder-{account.name}" class="field-input" name="folder" value={account.folder ?? ''} placeholder="INBOX" /></div>
+									<div class="flex items-end gap-3 pb-1">
+										<input id="essl-{account.name}" class="accent-primary-500" type="checkbox" name="ssl" checked={account.ssl ?? true} />
+										<label class="field-label" for="essl-{account.name}">Use SSL/TLS</label>
+									</div>
 								</div>
 								<div><label class="field-label" for="epw-{account.name}">Password</label><input id="epw-{account.name}" class="field-input" type="password" name="password" placeholder="Leave blank to keep existing…" /></div>
 								<div class="flex gap-2 justify-end pt-1">
@@ -221,7 +228,12 @@
 								<div><label class="field-label" for="new-ename">Account Name</label><input id="new-ename" class="field-input" name="name" placeholder="Work Mailbox" required /></div>
 								<div><label class="field-label" for="new-ehost">IMAP Host</label><input id="new-ehost" class="field-input" name="host" placeholder="imap.example.com" required /></div>
 								<div><label class="field-label" for="new-euser">Username</label><input id="new-euser" class="field-input" name="user" placeholder="you@example.com" required /></div>
+								<div><label class="field-label" for="new-eport">IMAP Port</label><input id="new-eport" class="field-input" type="number" name="port" min="1" max="65535" value="993" required /></div>
 								<div><label class="field-label" for="new-efolder">Folder Filter</label><input id="new-efolder" class="field-input" name="folder" placeholder="INBOX" /></div>
+								<div class="flex items-end gap-3 pb-1">
+									<input id="new-essl" class="accent-primary-500" type="checkbox" name="ssl" checked />
+									<label class="field-label" for="new-essl">Use SSL/TLS</label>
+								</div>
 							</div>
 							<div><label class="field-label" for="new-epw">Password</label><input id="new-epw" class="field-input" type="password" name="password" placeholder="App password or token…" required /></div>
 							<div class="flex justify-end pt-1">

@@ -38,6 +38,19 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_bool(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "ssl", "ssl/tls"}:
+        return True
+    if text in {"0", "false", "no", "off", "plain", "starttls"}:
+        return False
+    return default
+
+
 def save_status(status):
     os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
     temp_path = f"{STATUS_PATH}.tmp"
@@ -120,10 +133,12 @@ def push_to_memory(email_data):
 def process_account(account, settings):
     name = account['name']
     host = account['host']
+    port = int(account.get('port') or 993)
+    use_ssl = parse_bool(account.get('ssl'), True)
     user = account['user']
     password = account['password']
 
-    logger.info(f"Processing account: {name}")
+    logger.info(f"Processing account: {name} ({host}:{port}, ssl={use_ssl})")
     started_at = utc_now()
     messages_processed = 0
     folders_seen = 0
@@ -146,7 +161,7 @@ def process_account(account, settings):
     account_state = state.get(name, {})
 
     try:
-        with IMAPClient(host) as client:
+        with IMAPClient(host, port=port, ssl=use_ssl) as client:
             client.login(user, password)
             folders = client.list_folders()
             
@@ -326,11 +341,29 @@ def main():
             time.sleep(settings["sleep_interval"])
             continue
 
+        cycle_started_at = utc_now()
+        failed_accounts = []
+
         with open(ACCOUNTS_PATH, 'r') as f:
             accounts = json.load(f)
             for account in accounts:
                 if not process_account(account, settings):
-                    break
+                    failed_accounts.append(str(account.get("name", "unknown")))
+                    continue
+
+        if failed_accounts:
+            save_status({
+                "service": "email-worker",
+                "status": "error",
+                "current_account": failed_accounts[-1],
+                "last_cycle_started_at": cycle_started_at,
+                "last_cycle_finished_at": utc_now(),
+                "last_error": f"{len(failed_accounts)} mailbox(es) failed: {', '.join(failed_accounts)}",
+                "details": {
+                    "failed_accounts": failed_accounts,
+                },
+                "updated_at": utc_now(),
+            })
 
         logger.info(f"Local ingest cycle finished. Sleeping for {settings['sleep_interval']} seconds...")
         time.sleep(settings["sleep_interval"])
