@@ -1,5 +1,7 @@
 # Memory Hub
 
+![Memory Hub screenshot](static/projects/memory-hub.png)
+
 Memory Hub is the full memory feature stack for personal and coding agents. It includes the backend, queue-based embedding worker, enrichment worker, ingestion workers, gateway, dashboard, CLI, and the local data layout needed to run and restore the system from one repository.
 
 The repo supports two deployment modes:
