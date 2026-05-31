@@ -26,12 +26,16 @@ prompt_value() {
   local label="$1"
   local current="${2:-}"
   local value=""
-  if [[ -n "$current" ]]; then
-    printf '%s [%s]: ' "$label" "$current" >&2
-  else
-    printf '%s: ' "$label" >&2
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    log "Interactive install requires a terminal. Run this script from a shell, not a detached pipeline."
+    exit 1
   fi
-  IFS= read -r value
+  if [[ -n "$current" ]]; then
+    printf '%s [%s]: ' "$label" "$current" > /dev/tty
+  else
+    printf '%s: ' "$label" > /dev/tty
+  fi
+  IFS= read -r value < /dev/tty
   if [[ -z "$value" ]]; then
     value="$current"
   fi
