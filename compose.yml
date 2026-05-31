@@ -137,6 +137,7 @@ services:
     container_name: memory-agent-gateway
     restart: unless-stopped
     environment:
+      MEMORY_PUBLIC_ORIGIN: ${MEMORY_PUBLIC_ORIGIN:-}
       MEMORY_BACKEND_URL: ${MEMORY_BACKEND_URL:-http://agentmemory:3111}
       MEMORY_BACKEND_TOKEN: ${MEMORY_BACKEND_TOKEN:?Set MEMORY_BACKEND_TOKEN in .env}
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
@@ -158,6 +159,7 @@ services:
     user: "1000:1000"
     restart: unless-stopped
     environment:
+      MEMORY_PUBLIC_ORIGIN: ${MEMORY_PUBLIC_ORIGIN:-}
       MEMORY_GATEWAY_URL: ${MEMORY_GATEWAY_URL:-http://memory-agent-gateway:3112}
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
       MEMORY_HUB_DATA_DIR: /app/data/memory-hub

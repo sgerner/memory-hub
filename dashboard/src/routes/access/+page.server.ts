@@ -1,9 +1,18 @@
 import { env } from '$env/dynamic/private';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async () => {
+function normalizeOrigin(value: string) {
+	return value.replace(/\/+$/, '');
+}
+
+export const load: PageServerLoad = async ({ url }) => {
+	const publicOrigin = normalizeOrigin(env.MEMORY_PUBLIC_ORIGIN ?? '');
+	const resolvedOrigin = publicOrigin || url.origin;
+
 	return {
-		gatewayUrl: (env.MEMORY_GATEWAY_URL ?? '').replace(/\/$/, ''),
+		publicOrigin: resolvedOrigin,
+		apiUrl: `${resolvedOrigin}/api`,
+		mcpUrl: `${resolvedOrigin}/mcp`,
 		gatewayToken: env.MEMORY_GATEWAY_TOKEN ?? ''
 	};
 };
