@@ -7,13 +7,51 @@ const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:3112';
 const DEFAULT_AGENT = 'codex';
 const DEFAULT_CATEGORIES = ['agent', 'emails', 'obsidian', 'documents', 'code'];
 const MAX_RECALL_RESULTS = 5;
+const ENV_KEYS = ['MEMORY_GATEWAY_URL', 'MEMORY_GATEWAY_TOKEN', 'MEMORY_ADMIN_TOKEN', 'MEMORY_AGENT_NAME'];
+
+let envFileLoaded = false;
 
 function inputFromStdin() {
   const raw = fs.readFileSync(0, 'utf8').trim();
   return raw ? JSON.parse(raw) : {};
 }
 
+function decodeEnvValue(value) {
+  let text = String(value || '').trim();
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1);
+  }
+  return text.replace(/\\(["'\\$` ])/g, '$1');
+}
+
+function loadEnvFile() {
+  if (envFileLoaded) return;
+  envFileLoaded = true;
+
+  const envFile =
+    process.env.MEMORY_HUB_ENV_FILE || path.join(os.homedir(), '.config', 'memory-hub', 'agent.env');
+  try {
+    const lines = fs.readFileSync(envFile, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const assignment = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+      const equals = assignment.indexOf('=');
+      if (equals <= 0) continue;
+      const key = assignment.slice(0, equals).trim();
+      if (!ENV_KEYS.includes(key) || process.env[key]) continue;
+      process.env[key] = decodeEnvValue(assignment.slice(equals + 1));
+    }
+  } catch {
+    // Hooks still work with inherited env or localhost defaults.
+  }
+}
+
 function config() {
+  loadEnvFile();
   return {
     baseUrl: (process.env.MEMORY_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, ''),
     token: process.env.MEMORY_GATEWAY_TOKEN || '',
@@ -21,6 +59,22 @@ function config() {
     agent: process.env.MEMORY_AGENT_NAME || DEFAULT_AGENT,
     pluginData: process.env.PLUGIN_DATA || path.join(os.tmpdir(), 'memory-hub-plugin-data'),
   };
+}
+
+function debugLog(message, data = {}) {
+  if (!process.env.MEMORY_HUB_HOOK_DEBUG) return;
+  try {
+    const { pluginData } = config();
+    const filePath = path.join(pluginData, 'hook-debug.log');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(
+      filePath,
+      `${new Date().toISOString()} ${message} ${JSON.stringify(data)}\n`,
+      'utf8'
+    );
+  } catch {
+    // Debug logging must never affect hooks.
+  }
 }
 
 function sanitizeSegment(value) {
@@ -37,6 +91,70 @@ function clip(text, limit = 220) {
 function responsePreview(text) {
   const flattened = String(text || '').replace(/\s+/g, ' ').trim();
   return flattened.length > 300 ? `${flattened.slice(0, 299)}…` : flattened;
+}
+
+function textFromValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map(textFromValue).filter(Boolean).join('\n').trim();
+  if (typeof value === 'object') {
+    for (const key of ['text', 'content', 'message', 'body', 'value']) {
+      const text = textFromValue(value[key]);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function latestMessageText(input, roles) {
+  const messages = Array.isArray(input?.messages) ? input.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const role = String(message?.role || message?.type || '').toLowerCase();
+    if (roles.some((candidate) => role.includes(candidate))) {
+      return textFromValue(message);
+    }
+  }
+  return '';
+}
+
+function extractPrompt(input) {
+  for (const key of ['prompt', 'user_prompt', 'userPrompt', 'last_user_message', 'lastUserMessage']) {
+    const text = textFromValue(input?.[key]);
+    if (text) return text;
+  }
+  return latestMessageText(input, ['user']);
+}
+
+function extractAssistant(input) {
+  for (const key of [
+    'last_assistant_message',
+    'lastAssistantMessage',
+    'last_agent_message',
+    'lastAgentMessage',
+    'assistant_message',
+    'response',
+    'final_response',
+    'output',
+  ]) {
+    const text = textFromValue(input?.[key]);
+    if (text) return text;
+  }
+  return latestMessageText(input, ['assistant', 'agent']);
+}
+
+function stateKeys(input) {
+  return [
+    input?.turn_id,
+    input?.turnId,
+    input?.session_id,
+    input?.sessionId,
+    input?.thread_id,
+    input?.threadId,
+  ]
+    .filter((value) => value != null && String(value).trim())
+    .map((value) => String(value).trim())
+    .filter((value, index, values) => values.indexOf(value) === index);
 }
 
 async function readJsonResponse(response, path) {
@@ -182,15 +300,16 @@ async function sessionStart(input) {
 
 async function userPromptSubmit(input) {
   const { pluginData, agent } = config();
-  const prompt = String(input?.prompt || '').trim();
-  const turnId = String(input?.turn_id || input?.session_id || '');
+  const prompt = extractPrompt(input);
+  const keys = stateKeys(input);
 
-  if (turnId) {
-    await saveTurn(pluginData, turnId, {
+  for (const key of keys) {
+    await saveTurn(pluginData, key, {
       prompt,
       session_id: input?.session_id || null,
       cwd: input?.cwd || null,
       created_at: new Date().toISOString(),
+      raw_event_keys: Object.keys(input || {}).slice(0, 40),
     });
   }
 
@@ -219,21 +338,26 @@ async function userPromptSubmit(input) {
           `Memory Hub agent: ${agent}. Store confirmed durable facts after they are established.`,
       },
     };
-  } catch {
+  } catch (error) {
+    debugLog('UserPromptSubmit failed', { error: error?.message || String(error), keys: Object.keys(input || {}) });
     return { continue: true };
   }
 }
 
 async function stop(input) {
   const { pluginData, agent } = config();
-  const turnId = String(input?.turn_id || '');
-  const lastAssistantMessage = String(input?.last_assistant_message || '').trim();
+  const keys = stateKeys(input);
+  const lastAssistantMessage = extractAssistant(input);
 
   try {
-    const saved = turnId ? await loadTurn(pluginData, turnId) : null;
-    const prompt = String(saved?.prompt || '').trim();
+    let saved = null;
+    for (const key of keys) {
+      saved = await loadTurn(pluginData, key);
+      if (saved) break;
+    }
+    const prompt = extractPrompt(input) || String(saved?.prompt || '').trim();
 
-    if ((prompt || lastAssistantMessage) && (prompt.length > 20 || lastAssistantMessage.length > 20)) {
+    if (prompt || lastAssistantMessage) {
       await gatewayRequest('/v1/memories', {
         method: 'POST',
         body: {
@@ -252,18 +376,20 @@ async function stop(input) {
             source: 'codex-hook',
             hook_event: 'Stop',
             session_id: input?.session_id || null,
-            turn_id: turnId || null,
+            turn_id: input?.turn_id || input?.turnId || null,
             prompt_excerpt: clip(prompt, 240),
             assistant_excerpt: clip(lastAssistantMessage, 240),
+            raw_event_keys: Object.keys(input || {}).slice(0, 40).join(','),
           },
         },
       });
     }
-  } catch {
+  } catch (error) {
+    debugLog('Stop failed', { error: error?.message || String(error), keys: Object.keys(input || {}) });
     // keep Codex moving even if the summary store fails
   } finally {
-    if (turnId) {
-      await deleteTurn(pluginData, turnId);
+    for (const key of keys) {
+      await deleteTurn(pluginData, key);
     }
   }
 

@@ -7,13 +7,51 @@ const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:3112';
 const DEFAULT_AGENT = 'antigravity';
 const DEFAULT_CATEGORIES = ['agent', 'emails', 'obsidian', 'documents', 'code'];
 const MAX_RECALL_RESULTS = 5;
+const ENV_KEYS = ['MEMORY_GATEWAY_URL', 'MEMORY_GATEWAY_TOKEN', 'MEMORY_ADMIN_TOKEN', 'MEMORY_AGENT_NAME'];
+
+let envFileLoaded = false;
 
 function readStdinJson() {
   const raw = fs.readFileSync(0, 'utf8').trim();
   return raw ? JSON.parse(raw) : {};
 }
 
+function decodeEnvValue(value) {
+  let text = String(value || '').trim();
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1);
+  }
+  return text.replace(/\\(["'\\$` ])/g, '$1');
+}
+
+function loadEnvFile() {
+  if (envFileLoaded) return;
+  envFileLoaded = true;
+
+  const envFile =
+    process.env.MEMORY_HUB_ENV_FILE || path.join(os.homedir(), '.config', 'memory-hub', 'agent.env');
+  try {
+    const lines = fs.readFileSync(envFile, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const assignment = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+      const equals = assignment.indexOf('=');
+      if (equals <= 0) continue;
+      const key = assignment.slice(0, equals).trim();
+      if (!ENV_KEYS.includes(key) || process.env[key]) continue;
+      process.env[key] = decodeEnvValue(assignment.slice(equals + 1));
+    }
+  } catch {
+    // Hooks still work with inherited env or localhost defaults.
+  }
+}
+
 function config() {
+  loadEnvFile();
   return {
     baseUrl: (process.env.MEMORY_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, ''),
     token: process.env.MEMORY_GATEWAY_TOKEN || '',
@@ -23,6 +61,22 @@ function config() {
       process.env.MEMORY_PLUGIN_STATE_DIR ||
       path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cache', 'memory-hub'),
   };
+}
+
+function debugLog(message, data = {}) {
+  if (!process.env.MEMORY_HUB_HOOK_DEBUG) return;
+  try {
+    const { stateDir } = config();
+    const filePath = path.join(stateDir, 'hook-debug.log');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(
+      filePath,
+      `${new Date().toISOString()} ${message} ${JSON.stringify(data)}\n`,
+      'utf8'
+    );
+  } catch {
+    // Debug logging must never affect hooks.
+  }
 }
 
 function clip(value, limit = 240) {
@@ -76,6 +130,19 @@ function extractAssistantResponse(content) {
   return raw || '';
 }
 
+function textFromValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map(textFromValue).filter(Boolean).join('\n').trim();
+  if (typeof value === 'object') {
+    for (const key of ['text', 'content', 'message', 'body', 'value']) {
+      const text = textFromValue(value[key]);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
 function parseTranscriptLines(transcriptPath) {
   try {
     const lines = fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/);
@@ -100,6 +167,10 @@ function findLatestUserPrompt(rows) {
     if (row?.source === 'USER_EXPLICIT' && row?.type === 'USER_INPUT') {
       return extractUserRequest(row.content);
     }
+    const role = String(row?.role || row?.source || row?.type || '').toLowerCase();
+    if (role.includes('user')) {
+      return extractUserRequest(textFromValue(row));
+    }
   }
   return '';
 }
@@ -109,6 +180,11 @@ function findLatestPlannerResponse(rows) {
     const row = rows[i];
     if (row?.source === 'MODEL' && row?.type === 'PLANNER_RESPONSE' && row?.content) {
       return extractAssistantResponse(row.content);
+    }
+    const role = String(row?.role || row?.source || row?.type || '').toLowerCase();
+    if (role.includes('assistant') || role.includes('model') || role.includes('planner')) {
+      const text = extractAssistantResponse(textFromValue(row));
+      if (text) return text;
     }
   }
   return '';
@@ -263,7 +339,7 @@ async function preInvocation(input) {
 
 async function stop(input) {
   const { stateDir, agent } = config();
-  const fullyIdle = Boolean(input?.fullyIdle);
+  const fullyIdle = Object.prototype.hasOwnProperty.call(input || {}, 'fullyIdle') ? Boolean(input?.fullyIdle) : true;
 
   if (!fullyIdle) {
     return {
@@ -272,14 +348,20 @@ async function stop(input) {
     };
   }
 
-  const state = input?.conversationId ? await readTurnState(stateDir, input.conversationId) : null;
+  const conversationId = input?.conversationId || input?.conversation_id || input?.sessionId || input?.session_id || null;
+  const state = conversationId ? await readTurnState(stateDir, conversationId) : null;
   const transcriptPath = String(input?.transcriptPath || '');
   const rows = transcriptPath ? parseTranscriptLines(transcriptPath) : [];
-  const assistantSummary = findLatestPlannerResponse(rows);
-  const prompt = String(state?.prompt || '').trim();
+  const assistantSummary =
+    textFromValue(input?.lastAssistantMessage || input?.last_assistant_message || input?.lastAgentMessage) ||
+    findLatestPlannerResponse(rows);
+  const prompt =
+    textFromValue(input?.prompt || input?.userPrompt || input?.lastUserMessage || input?.last_user_message) ||
+    String(state?.prompt || '').trim() ||
+    findLatestUserPrompt(rows);
 
   try {
-    if (input?.conversationId && (prompt || assistantSummary)) {
+    if (prompt || assistantSummary) {
       await gatewayRequest('/v1/memories', {
         method: 'POST',
         body: {
@@ -299,18 +381,20 @@ async function stop(input) {
           metadata: {
             source: 'antigravity-hook',
             hook_event: 'Stop',
-            conversation_id: input?.conversationId || null,
+            conversation_id: conversationId,
             prompt_excerpt: clip(prompt, 240),
             assistant_excerpt: clip(assistantSummary, 240),
+            raw_event_keys: Object.keys(input || {}).slice(0, 40).join(','),
           },
         },
       });
     }
-  } catch {
+  } catch (error) {
+    debugLog('Stop failed', { error: error?.message || String(error), keys: Object.keys(input || {}) });
     // Never block shutdown on memory persistence.
   } finally {
-    if (input?.conversationId) {
-      await deleteTurnState(stateDir, input.conversationId);
+    if (conversationId) {
+      await deleteTurnState(stateDir, conversationId);
     }
   }
 
