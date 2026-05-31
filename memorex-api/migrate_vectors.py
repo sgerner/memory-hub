@@ -10,7 +10,7 @@ import aiohttp
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-print("Async Migration Script started.")
+print("Async Embedding Worker started.")
 
 POSTGRES_DB = os.getenv("POSTGRES_DB", "agentmemory")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "admin")
@@ -24,7 +24,7 @@ EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
 GEMINI_OUTPUT_DIMENSIONALITY = int(os.getenv("GEMINI_OUTPUT_DIMENSIONALITY", os.getenv("EMBEDDING_DIMS", "2560")))
-STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/migration-worker.json")
+STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/embedding-worker.json")
 
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
 CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "1"))
@@ -272,7 +272,7 @@ async def migrate_table(category):
             if not cur.fetchone()["to_regclass"]:
                 save_status(
                     {
-                        "service": "migration-worker",
+                        "service": "embedding-worker",
                         "status": "idle",
                         "current_table": table_name,
                         "items_total": 0,
@@ -304,7 +304,7 @@ async def migrate_table(category):
             if total_todo == 0:
                 save_status(
                     {
-                        "service": "migration-worker",
+                        "service": "embedding-worker",
                         "status": "idle",
                         "current_table": table_name,
                         "items_total": 0,
@@ -356,7 +356,7 @@ async def migrate_table(category):
             provider_concurrency = GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY
             save_status(
                 {
-                    "service": "migration-worker",
+                    "service": "embedding-worker",
                     "status": "waiting",
                     "current_table": table_name,
                     "items_total": total_todo,
@@ -375,7 +375,7 @@ async def migrate_table(category):
 
         save_status(
             {
-                "service": "migration-worker",
+                "service": "embedding-worker",
                 "status": "running",
                 "current_table": table_name,
                 "items_total": total_todo,
@@ -412,7 +412,7 @@ async def migrate_table(category):
                     if completed_in_batch % STATUS_UPDATE_EVERY == 0 or completed_in_batch == len(rows):
                         save_status(
                             {
-                                "service": "migration-worker",
+                                "service": "embedding-worker",
                                 "status": "running",
                                 "current_table": table_name,
                                 "items_total": total_todo,
@@ -437,7 +437,7 @@ async def migrate_table(category):
             print(f"Batch complete. Success: {success_count}/{len(rows)}")
             save_status(
                 {
-                    "service": "migration-worker",
+                    "service": "embedding-worker",
                     "status": "running",
                     "current_table": table_name,
                     "items_total": total_todo,
@@ -457,7 +457,7 @@ async def migrate_table(category):
         print(f"Error in table {table_name}: {exc}")
         save_status(
             {
-                "service": "migration-worker",
+                "service": "embedding-worker",
                 "status": "error",
                 "current_table": table_name,
                 "last_error": str(exc),
@@ -476,7 +476,7 @@ async def main():
 
         save_status(
             {
-                "service": "migration-worker",
+                "service": "embedding-worker",
                 "status": "running",
                 "current_table": None,
                 "items_total": None,
@@ -528,7 +528,7 @@ async def main():
             print("No more items to migrate. Exiting.")
             save_status(
                 {
-                    "service": "migration-worker",
+                    "service": "embedding-worker",
                     "status": "idle",
                     "current_table": None,
                     "items_processed": total_processed,
@@ -543,7 +543,7 @@ async def main():
         print(f"Completed a cycle. Starting next batch in {sleep_seconds}s...")
         save_status(
             {
-                "service": "migration-worker",
+                "service": "embedding-worker",
                 "status": "running",
                 "current_table": None,
                 "items_processed": total_processed,

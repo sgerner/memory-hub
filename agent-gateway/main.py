@@ -344,6 +344,9 @@ class MemoryService:
             "generated_at": utc_now(),
         }
 
+    async def queue_status(self) -> dict[str, Any]:
+        return await self.backend.get("/queue-status")
+
     async def patch(self, category: str, memory_id: str, patch: MemoryPatch) -> dict[str, Any]:
         metadata = {**patch.metadata, "modified_by": patch.source_agent}
         await self.backend.post(
@@ -558,6 +561,11 @@ async def overview(sample_limit: int = 20) -> dict[str, Any]:
             detail="sample_limit must be between 1 and 100",
         )
     return await service.overview(sample_limit)
+
+
+@app.get("/v1/queue-status", dependencies=[Depends(require_gateway_token)])
+async def queue_status() -> dict[str, Any]:
+    return await service.queue_status()
 
 
 @app.get("/v1/memories/{category}", dependencies=[Depends(require_gateway_token)])

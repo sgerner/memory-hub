@@ -65,9 +65,9 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  migration-worker:
+  embedding-worker:
     build: ./memorex-api
-    container_name: migration-worker
+    container_name: embedding-worker
     profiles: ["local-backend"]
     restart: unless-stopped
     command: python migrate_vectors.py
@@ -93,7 +93,7 @@ services:
       EMBED_CHUNK_SIZE: ${EMBED_CHUNK_SIZE:-1500}
       EMBED_CHUNK_OVERLAP: ${EMBED_CHUNK_OVERLAP:-150}
       EMBED_RETRY_MIN_CHUNK: ${EMBED_RETRY_MIN_CHUNK:-256}
-      STATUS_PATH: /app/status/migration-worker.json
+      STATUS_PATH: /app/status/embedding-worker.json
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
     depends_on:

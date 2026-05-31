@@ -13,7 +13,7 @@ It does **not** hardcode a domain. Set your own public origin if you put a rever
 
 | Component | Purpose | Path |
 | --- | --- | --- |
-| `memorex-api` | Memorex backend API, vector search, migrations, backup staging | `memorex-api/` |
+| `memorex-api` | Memorex backend API, vector search, embedding queue, backup staging | `memorex-api/` |
 | `agent-gateway` | Agent-facing REST and Streamable HTTP MCP gateway | `agent-gateway/` |
 | `dashboard` | Svelte 5 / Skeleton operator UI | `dashboard/` |
 | `docs-worker` | Documents ingestion from mounted source trees | `docs-worker/` |
@@ -130,7 +130,7 @@ Profiles:
 
 - `local-db` starts Postgres
 - `local-ollama` starts Ollama
-- `local-backend` starts the Memorex API, migration worker, and backup stager
+- `local-backend` starts the Memorex API, embedding worker, and backup stager
 
 The ingestion workers, gateway, and dashboard are always defined. They attach to either the local backend or your existing backend URL.
 

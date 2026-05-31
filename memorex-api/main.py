@@ -6,6 +6,7 @@ import traceback
 import re
 import math
 import threading
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
@@ -102,6 +103,10 @@ EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
 OLLAMA_EMBED_TIMEOUT = int(os.getenv("OLLAMA_EMBED_TIMEOUT", "120"))
 embedding_cache_lock = threading.Lock()
 embedding_cache: dict[str, tuple[float, List[float]]] = {}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_vector_indexes():
@@ -665,6 +670,62 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
         }
     except Exception as e:
         logger.error(f"Error in /search-multi: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/queue-status")
+def queue_status(token: str = Depends(verify_token)):
+    try:
+        totals = {"embedding_pending": 0, "enrichment_pending": 0}
+        categories: dict[str, dict[str, int]] = {}
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for category in sorted(ALLOWED_CATEGORIES):
+                    table_name = table_for(category)
+                    cur.execute("SELECT to_regclass(%s)", (table_name,))
+                    if not cur.fetchone()["to_regclass"]:
+                        continue
+
+                    existing_cols = existing_columns(cur, table_name)
+                    embedding_pending = 0
+                    enrichment_pending = 0
+
+                    if "embedding" in existing_cols:
+                        embedding_conditions = ["embedding IS NULL"]
+                        if "embedding_status" in existing_cols:
+                            embedding_conditions.append(
+                                "COALESCE(LOWER(embedding_status), 'pending') IN ('pending', 'retry', 'processing')"
+                            )
+                        cur.execute(
+                            f"SELECT COUNT(*) AS count FROM {table_name} WHERE {' OR '.join(embedding_conditions)}"
+                        )
+                        embedding_pending = int(cur.fetchone()["count"])
+
+                    if "needs_enrichment" in existing_cols:
+                        cur.execute(
+                            f"""
+                            SELECT COUNT(*) AS count
+                            FROM {table_name}
+                            WHERE LOWER(COALESCE(needs_enrichment::text, 'false')) IN ('true', '1', 'yes')
+                            """
+                        )
+                        enrichment_pending = int(cur.fetchone()["count"])
+
+                    categories[category] = {
+                        "embedding_pending": embedding_pending,
+                        "enrichment_pending": enrichment_pending,
+                    }
+                    totals["embedding_pending"] += embedding_pending
+                    totals["enrichment_pending"] += enrichment_pending
+
+        return {
+            "success": True,
+            "totals": totals,
+            "categories": categories,
+            "generated_at": utc_now(),
+        }
+    except Exception as e:
+        logger.error(f"Error in /queue-status: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 

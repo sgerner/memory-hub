@@ -34,6 +34,13 @@
 		}
 		return "Please verify the credentials, connection settings, or review the stack docker container logs.";
 	}
+
+	const formatBacklog = (value?: number | null) => {
+		const count = Number(value ?? 0);
+		if (!Number.isFinite(count)) return '0';
+		if (count >= 1000) return `${(count / 1000).toFixed(count >= 100000 ? 0 : 1).replace(/\.0$/, '')}k`;
+		return String(count);
+	};
 </script>
 
 <svelte:head>
@@ -67,10 +74,20 @@
 				Backend offline
 			</span>
 		{:else if page.url.pathname === '/'}
-			<span class="process-status running font-mono text-[0.58rem]">
-				<span class="pulse-dot mr-1.5"></span>
-				Gateway online
-			</span>
+			<div class="flex items-center gap-2">
+				<span class="process-status running font-mono text-[0.58rem]">
+					<span class="pulse-dot mr-1.5"></span>
+					Gateway online
+				</span>
+				{#if page.data?.queueStatus?.totals}
+					<span class="process-status idle font-mono text-[0.58rem]">
+						Embed {formatBacklog(page.data.queueStatus.totals.embedding_pending)}
+					</span>
+					<span class="process-status warn font-mono text-[0.58rem]">
+						Enrich {formatBacklog(page.data.queueStatus.totals.enrichment_pending)}
+					</span>
+				{/if}
+			</div>
 		{/if}
 	</div>
 
@@ -90,16 +107,16 @@
 	</div>
 
 	<!-- Worker error alerts -->
-	{#if page.data?.observability}
-		{#each page.data.observability as entry}
-			{#if entry.data?.status === 'error'}
-				<div class="border-b border-error-500/25 bg-error-950/20 px-6 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4 font-mono text-xs" transition:fade>
-					<div class="flex items-start gap-3 min-w-0">
-						<span class="text-error-400 font-bold shrink-0 mt-0.5">[ERROR] {entry.label.toUpperCase()}:</span>
-						<div class="min-w-0">
-							<p class="text-surface-100 font-medium break-words">{entry.data.last_error || 'An unexpected error was reported.'}</p>
-							<p class="text-surface-400 text-[10px] mt-1"><span class="text-surface-500 font-bold">REMEDY:</span> {getWorkerSuggestion(entry.label, entry.data.last_error)}</p>
-						</div>
+		{#if page.data?.observability}
+			{#each page.data.observability as entry}
+				{#if entry.data?.status === 'error'}
+					<div class="border-b border-error-500/25 bg-error-950/20 px-6 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4 font-mono text-xs" transition:fade>
+						<div class="flex items-start gap-3 min-w-0">
+							<span class="text-error-400 font-bold shrink-0 mt-0.5">[ERROR] {entry.label.toUpperCase()}{entry.data.current_account ? ` (${entry.data.current_account})` : ''}:</span>
+							<div class="min-w-0">
+								<p class="text-surface-100 font-medium break-words">{entry.data.last_error || 'An unexpected error was reported.'}</p>
+								<p class="text-surface-400 text-[10px] mt-1"><span class="text-surface-500 font-bold">REMEDY:</span> {getWorkerSuggestion(entry.label, entry.data.last_error)}</p>
+							</div>
 					</div>
 					<a href="/settings" class="ghost-btn danger shrink-0 self-start md:self-center text-center">Update settings</a>
 				</div>
@@ -109,4 +126,3 @@
 </header>
 
 <slot />
-

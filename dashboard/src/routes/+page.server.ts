@@ -13,6 +13,15 @@ type Overview = {
 	generated_at: string;
 };
 
+type QueueStatus = {
+	totals: {
+		embedding_pending: number;
+		enrichment_pending: number;
+	};
+	categories: Record<string, { embedding_pending: number; enrichment_pending: number }>;
+	generated_at: string;
+};
+
 const categories = ['agent', 'emails', 'obsidian', 'documents', 'code'];
 
 export const load: PageServerLoad = async ({ url }) => {
@@ -21,10 +30,11 @@ export const load: PageServerLoad = async ({ url }) => {
 		: 'agent';
 	const includeInactive = url.searchParams.get('inactive') === 'true';
 	try {
-		const [overview, listed, observability] = await Promise.all([
+		const [overview, listed, observability, queueStatus] = await Promise.all([
 			gateway<Overview>('/v1/overview?sample_limit=20'),
 			gateway<{ memories: Memory[] }>(`/v1/memories/${category}?limit=30&include_inactive=${includeInactive}`),
-			loadObservability()
+			loadObservability(),
+			gateway<QueueStatus>('/v1/queue-status')
 		]);
 		return {
 			overview,
@@ -33,6 +43,7 @@ export const load: PageServerLoad = async ({ url }) => {
 			category,
 			includeInactive,
 			observability,
+			queueStatus,
 			backendError: null
 		};
 	} catch {
@@ -43,6 +54,11 @@ export const load: PageServerLoad = async ({ url }) => {
 			sample_limit: 20,
 			generated_at: new Date().toISOString()
 		};
+		const queueStatus: QueueStatus = {
+			totals: { embedding_pending: 0, enrichment_pending: 0 },
+			categories: {},
+			generated_at: new Date().toISOString()
+		};
 		return {
 			overview,
 			memories: [],
@@ -50,6 +66,7 @@ export const load: PageServerLoad = async ({ url }) => {
 			category,
 			includeInactive,
 			observability: [],
+			queueStatus,
 			backendError: 'Memory data is temporarily unavailable while the backend is busy or restarting.'
 		};
 	}

@@ -3,6 +3,7 @@ import { backupDir, readJson, statusDir } from './memory-hub';
 export type WorkerStatus = {
 	service: string;
 	status: string;
+	current_account?: string;
 	last_cycle_started_at?: string;
 	last_cycle_finished_at?: string;
 	last_success_at?: string;
@@ -32,7 +33,7 @@ const knownStatuses: Array<[string, string]> = [
 	['GitHub worker', 'github-worker.json'],
 	['Obsidian worker', 'obsidian-worker.json'],
 	['Enrichment worker', 'enricher-worker.json'],
-	['Migration worker', 'migration-worker.json'],
+	['Embedding worker', 'embedding-worker.json'],
 	['Backup job', 'backup.json']
 ];
 
@@ -41,7 +42,11 @@ export async function loadObservability(): Promise<ObservabilityCard[]> {
 		knownStatuses.map(async ([label, file]) => ({
 			label,
 			file,
-			data: await readJson<WorkerStatus | null>(`${statusDir}/${file}`, null)
+			data:
+				(await readJson<WorkerStatus | null>(`${statusDir}/${file}`, null)) ??
+				(label === 'Embedding worker'
+					? await readJson<WorkerStatus | null>(`${statusDir}/migration-worker.json`, null)
+					: null)
 		}))
 	);
 }
@@ -49,4 +54,3 @@ export async function loadObservability(): Promise<ObservabilityCard[]> {
 export async function loadBackupManifest(): Promise<Record<string, unknown> | null> {
 	return readJson<Record<string, unknown> | null>(`${backupDir}/manifest.json`, null);
 }
-
