@@ -124,6 +124,14 @@ def ensure_vector_indexes():
 
                 existing_cols = existing_columns(cur, table_name)
 
+                if category == "emails" and {"account", "folder", "uid"}.issubset(existing_cols):
+                    email_index_name = f"{table_name}_account_folder_uid_idx"
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{email_index_name}",))
+                    if not cur.fetchone()["to_regclass"]:
+                        logger.info("Creating email lookup index %s on %s", email_index_name, table_name)
+                        cur.execute(f"CREATE INDEX CONCURRENTLY {email_index_name} ON {table_name} (account, folder, uid)")
+                        logger.info("Email lookup index ready: %s", email_index_name)
+
                 operational_indexes: list[tuple[str, str]] = []
                 if "embedding_status" in existing_cols:
                     operational_indexes.append(
@@ -361,6 +369,17 @@ class MemoryDelete(BaseModel):
     id: str
     category: str
 
+class EmailDelete(BaseModel):
+    account: str
+    folder: Optional[str] = None
+    uid: Optional[str] = None
+    message_id: Optional[str] = None
+    subject: Optional[str] = None
+    sender: Optional[str] = None
+    receiver: Optional[str] = None
+    date: Optional[str] = None
+    reason: Optional[str] = None
+
 def table_for(category: str) -> str:
     if not SAFE_CATEGORY.fullmatch(category) or category not in ALLOWED_CATEGORIES:
         raise HTTPException(status_code=422, detail=f"Category is not enabled: {category}")
@@ -567,12 +586,33 @@ def sanitize(val):
         return val.replace('\x00', '')
     return val
 
+def normalize_message_id(value: Optional[str]) -> Optional[str]:
+    message_id = sanitize(value)
+    if not message_id:
+        return None
+    message_id = message_id.strip()
+    if message_id.startswith("<") and message_id.endswith(">") and len(message_id) > 2:
+        message_id = message_id[1:-1].strip()
+    return message_id or None
+
 def resolve_embedding_source(content: Optional[str], embedding_text: Optional[str]) -> Optional[str]:
     if embedding_text is not None:
         return sanitize(embedding_text)
     if content is not None:
         return sanitize(content)
     return None
+
+
+def email_identity(metadata: Dict[str, Any]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    account = sanitize(metadata.get("account")) if metadata else None
+    folder = sanitize(metadata.get("folder")) if metadata else None
+    uid = sanitize(metadata.get("uid")) if metadata else None
+    return account, folder, uid
+
+def email_message_id(metadata: Dict[str, Any]) -> Optional[str]:
+    if not metadata:
+        return None
+    return normalize_message_id(metadata.get("message_id"))
 
 @app.post("/remember")
 def remember(data: MemoryCreate, token: str = Depends(verify_token)):
@@ -590,6 +630,58 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
         with get_db_connection() as conn:
             _ensure_table(conn, data.category, metadata)
             table_name = table_for(data.category)
+
+            if data.category == "emails":
+                account, folder, uid = email_identity(metadata)
+                message_id = email_message_id(metadata)
+                if account and message_id:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT id
+                            FROM {table_name}
+                            WHERE account = %s AND message_id = %s
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (account, message_id),
+                        )
+                        existing = cur.fetchone()
+                        if existing:
+                            conn.commit()
+                            return {
+                                "success": True,
+                                "memory": {
+                                    "id": existing["id"],
+                                    "document": data.content,
+                                    "metadata": metadata,
+                                    "deduplicated": True,
+                                },
+                            }
+                if account and folder and uid:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT id
+                            FROM {table_name}
+                            WHERE account = %s AND folder = %s AND uid = %s
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (account, folder, uid),
+                        )
+                        existing = cur.fetchone()
+                        if existing:
+                            conn.commit()
+                            return {
+                                "success": True,
+                                "memory": {
+                                    "id": existing["id"],
+                                    "document": data.content,
+                                    "metadata": metadata,
+                                    "deduplicated": True,
+                                },
+                            }
             
             cols = [
                 "document",
@@ -885,6 +977,73 @@ def delete_item(data: MemoryDelete, token: str = Depends(verify_token)):
     except Exception as e:
         logger.error(f"Error in /delete: {e}")
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/delete-email")
+def delete_email(data: EmailDelete, token: str = Depends(verify_token)):
+    try:
+        account = sanitize(data.account)
+        if not account:
+            raise HTTPException(status_code=422, detail="Account is required")
+
+        with get_db_connection() as conn:
+            table_name = table_for("emails")
+            with conn.cursor() as cur:
+                existing_cols = existing_columns(cur, table_name)
+
+            message_id = normalize_message_id(data.message_id)
+            fallback_fields = [
+                ("subject", sanitize(data.subject)),
+                ("sender", sanitize(data.sender)),
+                ("receiver", sanitize(data.receiver)),
+                ("date", sanitize(data.date)),
+            ]
+            matched = [(field, value) for field, value in fallback_fields if value]
+
+            delete_attempts: list[tuple[str, list[Any]]] = []
+            if message_id and "message_id" in existing_cols:
+                delete_attempts.append(("account = %s AND message_id = %s", [account, message_id]))
+                if len(matched) >= 2:
+                    delete_attempts.append(
+                        (
+                            " AND ".join(["account = %s", *[f"{field} = %s" for field, _ in matched]]),
+                            [account, *[value for _, value in matched]],
+                        )
+                    )
+            elif message_id and len(matched) >= 2:
+                delete_attempts.append(
+                    (
+                        " AND ".join(["account = %s", *[f"{field} = %s" for field, _ in matched]]),
+                        [account, *[value for _, value in matched]],
+                    )
+                )
+
+            if data.folder and data.uid:
+                delete_attempts.append(("account = %s AND folder = %s AND uid = %s", [account, sanitize(data.folder), sanitize(data.uid)]))
+
+            if not delete_attempts and len(matched) >= 2:
+                delete_attempts.append(
+                    (
+                        " AND ".join(["account = %s", *[f"{field} = %s" for field, _ in matched]]),
+                        [account, *[value for _, value in matched]],
+                    )
+                )
+
+            if not delete_attempts:
+                raise HTTPException(status_code=422, detail="Need message_id or folder+uid or at least two fallback fields")
+
+            with conn.cursor() as cur:
+                deleted_ids: list[int] = []
+                for where_sql, values in delete_attempts:
+                    cur.execute(f"DELETE FROM {table_name} WHERE {where_sql} RETURNING id", values)
+                    deleted_ids.extend(row["id"] for row in cur.fetchall())
+            conn.commit()
+        return {"success": True, "deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /delete-email: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")

@@ -18,7 +18,24 @@ AGENTMEMORY_TOKEN = os.getenv("AGENTMEMORY_TOKEN")
 SETTINGS_PATH = "/app/config/settings.json"
 SECRETS_PATH = os.getenv("SECRETS_PATH", "/app/shared-settings/secrets.json")
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/enricher-worker.json")
+WORKER_NAME = os.getenv("WORKER_NAME", "enricher-worker").strip() or "enricher-worker"
 ENRICH_PROVIDER = os.getenv("ENRICH_PROVIDER", "opencode").strip().lower()
+REMOTE_OLLAMA_HOST = os.getenv("REMOTE_OLLAMA_HOST", "").strip()
+REMOTE_OLLAMA_MODEL = os.getenv("REMOTE_OLLAMA_MODEL", "qwen3.5:9b").strip()
+REMOTE_OLLAMA_TIMEOUT_SECONDS = int(os.getenv("REMOTE_OLLAMA_TIMEOUT_SECONDS", "180"))
+REMOTE_OLLAMA_TEXT_LIMIT = int(os.getenv("REMOTE_OLLAMA_TEXT_LIMIT", "4000"))
+REMOTE_OLLAMA_NUM_PREDICT = int(os.getenv("REMOTE_OLLAMA_NUM_PREDICT", "384"))
+REMOTE_OLLAMA_TEMPERATURE = float(os.getenv("REMOTE_OLLAMA_TEMPERATURE", "0.1"))
+REMOTE_OLLAMA_CONCURRENCY = int(os.getenv("REMOTE_OLLAMA_CONCURRENCY", "2"))
+REMOTE_OLLAMA_THINK = os.getenv("REMOTE_OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENRICH_CATEGORIES = [
+    item.strip()
+    for item in os.getenv("ENRICH_CATEGORIES", "emails,obsidian,documents,code").split(",")
+    if item.strip()
+]
+ENRICH_EMAIL_STRATEGY = os.getenv("ENRICH_EMAIL_STRATEGY", "all").strip().lower()
+ENRICH_EMAIL_MAX_CHARS = int(os.getenv("ENRICH_EMAIL_MAX_CHARS", "1500"))
+ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS = os.getenv("ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 OPENCODE_GO_BASE_URL = os.getenv("LLM_BASE_URL", "https://opencode.ai/zen/go/v1")
 OPENCODE_ZEN_BASE_URL = os.getenv("LLM_FREE_BASE_URL", "https://opencode.ai/zen/v1")
@@ -108,6 +125,18 @@ def load_settings():
         "text_limit": 8000,
         "gemini_model": GEMINI_MODEL,
         "gemini_request_timeout_seconds": GEMINI_REQUEST_TIMEOUT_SECONDS,
+        "remote_ollama_host": REMOTE_OLLAMA_HOST,
+        "remote_ollama_model": REMOTE_OLLAMA_MODEL,
+        "remote_ollama_timeout_seconds": REMOTE_OLLAMA_TIMEOUT_SECONDS,
+        "remote_ollama_text_limit": REMOTE_OLLAMA_TEXT_LIMIT,
+        "remote_ollama_num_predict": REMOTE_OLLAMA_NUM_PREDICT,
+        "remote_ollama_temperature": REMOTE_OLLAMA_TEMPERATURE,
+        "remote_ollama_concurrency": REMOTE_OLLAMA_CONCURRENCY,
+        "remote_ollama_think": REMOTE_OLLAMA_THINK,
+        "enrich_categories": ENRICH_CATEGORIES,
+        "email_strategy": ENRICH_EMAIL_STRATEGY,
+        "email_max_chars": ENRICH_EMAIL_MAX_CHARS,
+        "email_require_no_attachments": ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS,
         "email_model": "deepseek-v4-flash",
         "email_fallback_model": "deepseek-v4-flash-free",
         "knowledge_model": "deepseek-v4-flash",
@@ -115,12 +144,21 @@ def load_settings():
         "fallback_requests_per_minute": 4,
     }
     configured = load_json(SETTINGS_PATH, {})
-    for key in ("batch_size", "sleep_interval", "concurrency", "gemini_concurrency", "text_limit", "fallback_requests_per_minute"):
+    for key in ("batch_size", "sleep_interval", "concurrency", "gemini_concurrency", "text_limit", "fallback_requests_per_minute", "remote_ollama_timeout_seconds", "remote_ollama_text_limit", "remote_ollama_num_predict", "remote_ollama_temperature", "remote_ollama_concurrency", "email_max_chars"):
         if key in configured:
-            settings[key] = int(configured[key])
-    for key in ("email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"):
+            settings[key] = float(configured[key]) if key in {"remote_ollama_temperature"} else int(configured[key])
+    for key in ("remote_ollama_host", "remote_ollama_model", "email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model", "email_strategy"):
         if key in configured:
             settings[key] = str(configured[key])
+    for key in ("remote_ollama_think", "email_require_no_attachments"):
+        if key in configured:
+            settings[key] = normalize_bool(configured[key])
+    if "enrich_categories" in configured:
+        configured_categories = configured["enrich_categories"]
+        if isinstance(configured_categories, str):
+            settings["enrich_categories"] = [item.strip() for item in configured_categories.split(",") if item.strip()]
+        elif isinstance(configured_categories, list):
+            settings["enrich_categories"] = [str(item).strip() for item in configured_categories if str(item).strip()]
 
     env_overrides = {
         "batch_size": os.getenv("ENRICH_BATCH_SIZE"),
@@ -128,6 +166,18 @@ def load_settings():
         "concurrency": os.getenv("ENRICH_CONCURRENCY"),
         "gemini_concurrency": os.getenv("GEMINI_CONCURRENCY"),
         "text_limit": os.getenv("ENRICH_TEXT_LIMIT"),
+        "remote_ollama_host": os.getenv("REMOTE_OLLAMA_HOST"),
+        "remote_ollama_model": os.getenv("REMOTE_OLLAMA_MODEL"),
+        "remote_ollama_timeout_seconds": os.getenv("REMOTE_OLLAMA_TIMEOUT_SECONDS"),
+        "remote_ollama_text_limit": os.getenv("REMOTE_OLLAMA_TEXT_LIMIT"),
+        "remote_ollama_num_predict": os.getenv("REMOTE_OLLAMA_NUM_PREDICT"),
+        "remote_ollama_temperature": os.getenv("REMOTE_OLLAMA_TEMPERATURE"),
+        "remote_ollama_concurrency": os.getenv("REMOTE_OLLAMA_CONCURRENCY"),
+        "remote_ollama_think": os.getenv("REMOTE_OLLAMA_THINK"),
+        "enrich_categories": os.getenv("ENRICH_CATEGORIES"),
+        "email_strategy": os.getenv("ENRICH_EMAIL_STRATEGY"),
+        "email_max_chars": os.getenv("ENRICH_EMAIL_MAX_CHARS"),
+        "email_require_no_attachments": os.getenv("ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS"),
         "email_model": os.getenv("ENRICH_EMAIL_MODEL"),
         "email_fallback_model": os.getenv("ENRICH_EMAIL_FALLBACK_MODEL"),
         "knowledge_model": os.getenv("ENRICH_KNOWLEDGE_MODEL"),
@@ -136,8 +186,15 @@ def load_settings():
     for key, value in env_overrides.items():
         if value is None or value == "":
             continue
-        if key in {"email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"}:
+        if key in {"remote_ollama_think", "email_require_no_attachments"}:
+            settings[key] = normalize_bool(value)
+            continue
+        if key in {"remote_ollama_host", "remote_ollama_model", "email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model", "email_strategy"}:
             settings[key] = str(value)
+        elif key == "remote_ollama_temperature":
+            settings[key] = float(value)
+        elif key == "enrich_categories":
+            settings[key] = [item.strip() for item in str(value).split(",") if item.strip()]
         else:
             settings[key] = int(value)
     return settings
@@ -159,6 +216,8 @@ def load_secrets():
 
 
 def effective_concurrency(settings, secrets):
+    if ENRICH_PROVIDER == "remote_ollama":
+        return max(1, settings["remote_ollama_concurrency"])
     if ENRICH_PROVIDER == "gemini":
         return max(1, settings["gemini_concurrency"])
     if secrets["llm_api_key"]:
@@ -267,6 +326,27 @@ def provider_status_fields(
     primary_cooldown: PrimaryCooldownState,
     fallback_cooldown: FallbackCooldownState | None = None,
 ) -> dict:
+    remote_email_active = ENRICH_PROVIDER == "remote_ollama" and bool(settings.get("remote_ollama_host")) and bool(settings.get("remote_ollama_model"))
+    remote_email_fields = {
+        "remote_email_provider": f"ollama:{settings['remote_ollama_model']}" if remote_email_active else "none",
+        "remote_email_enabled": remote_email_active,
+        "remote_email_max_chars": settings.get("email_max_chars", ENRICH_EMAIL_MAX_CHARS),
+        "remote_email_concurrency": settings.get("remote_ollama_concurrency", REMOTE_OLLAMA_CONCURRENCY),
+        "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+        "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
+    }
+    if ENRICH_PROVIDER == "remote_ollama":
+        return {
+            "primary_provider": f"ollama:{settings['remote_ollama_model']}" if remote_email_active else "none",
+            "fallback_provider": "none",
+            "primary_cooldown_active": False,
+            "primary_cooldown_until": "",
+            "primary_cooldown_remaining_seconds": 0,
+            "fallback_cooldown_active": False,
+            "fallback_cooldown_until": "",
+            "fallback_cooldown_remaining_seconds": 0,
+            **remote_email_fields,
+        }
     if ENRICH_PROVIDER == "gemini":
         gemini_active = bool(secrets["gemini_api_key"])
         return {
@@ -278,6 +358,7 @@ def provider_status_fields(
             "fallback_cooldown_active": False,
             "fallback_cooldown_until": "",
             "fallback_cooldown_remaining_seconds": 0,
+            **remote_email_fields,
         }
 
     primary_active = bool(secrets["llm_api_key"])
@@ -291,6 +372,7 @@ def provider_status_fields(
         "fallback_cooldown_active": fallback_cooldown.is_active() if fallback_cooldown else False,
         "fallback_cooldown_until": fallback_cooldown.until_iso() if fallback_cooldown else "",
         "fallback_cooldown_remaining_seconds": fallback_cooldown.remaining_seconds() if fallback_cooldown else 0,
+        **remote_email_fields,
     }
 
 
@@ -412,6 +494,36 @@ def extract_keywords(text: str, limit: int = 6) -> list[str]:
 
 def extract_email_addresses(text: str) -> list[str]:
     return normalize_list(re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", normalize_text(text)), max_items=12)
+
+
+def parse_category_selection(value) -> list[str]:
+    if isinstance(value, list):
+        return [normalize_text(item) for item in value if normalize_text(item)]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return ["emails", "obsidian", "documents", "code"]
+
+
+def email_matches_strategy(text: str, source_metadata: dict, settings: dict) -> bool:
+    strategy = normalize_text(settings.get("email_strategy", ENRICH_EMAIL_STRATEGY)).lower()
+    max_chars = int(settings.get("email_max_chars", ENRICH_EMAIL_MAX_CHARS))
+    require_no_attachments = bool(settings.get("email_require_no_attachments", ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS))
+    body = normalize_text(strip_existing_enrichment(text))
+    if not body:
+        return False
+    has_attachments = "attachments:" in body.lower() or "attachment content:" in body.lower()
+    small_email = len(body) <= max_chars and (not require_no_attachments or not has_attachments)
+    if strategy in {"all", ""}:
+        return True
+    if strategy == "small_only":
+        return small_email
+    if strategy == "large_only":
+        return not small_email
+    if strategy == "no_attachments":
+        return not has_attachments
+    if strategy == "off":
+        return False
+    return True
 
 
 def extract_dates(text: str, metadata: dict) -> list[str]:
@@ -830,6 +942,64 @@ Category-specific keys:
 """
 
 
+def build_remote_email_system_prompt():
+    return """You enrich an email message for a personal memory hub.
+
+Return ONLY valid JSON. No markdown fences. No explanation text.
+
+Prefer compact, retrieval-friendly fields. Keep the summary to 2-3 sentences.
+If a field is unknown, use an empty string, empty array, or false.
+Prefer canonical names and semantic labels over raw wording.
+Use the source metadata when it helps identify titles, people, senders, recipients, and due dates.
+
+JSON keys:
+  title
+  summary
+  topics
+  people
+  organizations
+  dates
+  action_items
+  importance
+  sender
+  recipients
+  reply_needed
+  thread_focus
+"""
+
+
+def build_remote_email_source_context(metadata: dict, limit: int = 6) -> str:
+    if not metadata:
+        return ""
+
+    ordered_keys = []
+    for key in ["subject", "from", "sender", "to", "cc", "bcc", "date", "account", "folder"]:
+        if key in metadata and key not in ordered_keys:
+            ordered_keys.append(key)
+
+    for key in sorted(metadata.keys()):
+        if key in ordered_keys or key in EXCLUDED_METADATA_KEYS or key.startswith("enrichment_"):
+            continue
+        ordered_keys.append(key)
+
+    lines = []
+    for key in ordered_keys:
+        if len(lines) >= limit:
+            break
+        text = normalize_metadata_value(metadata.get(key))
+        if text:
+            lines.append(f"{display_name(key)}: {text}")
+    return "\n".join(lines)
+
+
+def build_remote_email_user_prompt(text, text_limit, source_context=""):
+    prompt = ["Category: email message"]
+    if source_context:
+        prompt.append(f"Source metadata:\n{source_context}")
+    prompt.append(f"Source text:\n{normalize_text(text)[:text_limit]}")
+    return "\n\n".join(prompt)
+
+
 def build_user_prompt(category, text, text_limit, source_context=""):
     label = CATEGORY_LABELS.get(category, category)
     prompt = [f"Category: {label}"]
@@ -856,22 +1026,39 @@ class RateLimiter:
             self._last_call = time.time()
 
 
+def should_use_remote_email_ollama(category: str, text: str, source_metadata: dict, settings: dict) -> bool:
+    if category != "emails":
+        return False
+
+    if ENRICH_PROVIDER != "remote_ollama":
+        return False
+    host = normalize_text(settings.get("remote_ollama_host"))
+    model = normalize_text(settings.get("remote_ollama_model"))
+    if not host or not model:
+        return False
+    return email_matches_strategy(text, source_metadata, settings)
+
+
 def get_pending_memories(settings):
     try:
         pending = []
-        categories = ["emails", "obsidian", "documents", "code"]
+        categories = parse_category_selection(settings.get("enrich_categories", ENRICH_CATEGORIES))
         for category in categories:
             url = f"{AGENTMEMORY_URL}/memories/{category}?limit={settings['batch_size']}&needs_enrichment=true"
             response = memory_session.get(url, timeout=15)
             if response.status_code == 200:
                 memories = response.json().get("memories", [])
                 for item in memories:
+                    content = item.get("document", item.get("content", ""))
+                    metadata = item.get("metadata") or {}
+                    if category == "emails" and not email_matches_strategy(content, metadata, settings):
+                        continue
                     pending.append(
                         {
                             "id": item.get("id"),
                             "category": category,
-                            "content": item.get("document", item.get("content", "")),
-                            "metadata": item.get("metadata") or {},
+                            "content": content,
+                            "metadata": metadata,
                         }
                     )
         return pending
@@ -944,6 +1131,37 @@ async def call_gemini(session, api_key, model, category, text, text_limit, sourc
         return None
 
 
+async def call_ollama(session, base_url, model, text, text_limit, source_context="", temperature=0.1, num_predict=384, think=False):
+    try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": build_remote_email_system_prompt()},
+                {"role": "user", "content": build_remote_email_user_prompt(text, text_limit, source_context)},
+            ],
+            "stream": False,
+            "format": "json",
+            "think": think,
+            "options": {
+                "temperature": temperature,
+                "num_predict": num_predict,
+            },
+        }
+        url = f"{base_url.rstrip('/')}/api/chat"
+
+        async with session.post(url, json=payload, timeout=REMOTE_OLLAMA_TIMEOUT_SECONDS) as response:
+            if response.status == 429:
+                return "RATE_LIMIT"
+            response.raise_for_status()
+            data = await response.json()
+            message = data.get("message") or {}
+            content = message.get("content") or ""
+            return content.strip()
+    except Exception as exc:
+        logger.error("Ollama call to %s failed: %s", model, exc)
+        return None
+
+
 async def enrich_with_fallback(
     session,
     text,
@@ -954,7 +1172,31 @@ async def enrich_with_fallback(
     limiter,
     primary_cooldown,
     fallback_cooldown,
+    remote_ollama_semaphore,
 ):
+    if should_use_remote_email_ollama(category, text, source_metadata, settings):
+        source_context = build_remote_email_source_context(source_metadata)
+        async with remote_ollama_semaphore:
+            response = await call_ollama(
+                session,
+                settings["remote_ollama_host"],
+                settings["remote_ollama_model"],
+                text,
+                settings["remote_ollama_text_limit"],
+                source_context,
+                temperature=float(settings.get("remote_ollama_temperature", REMOTE_OLLAMA_TEMPERATURE)),
+                num_predict=int(settings.get("remote_ollama_num_predict", REMOTE_OLLAMA_NUM_PREDICT)),
+                think=bool(settings.get("remote_ollama_think", REMOTE_OLLAMA_THINK)),
+            )
+        if response == "RATE_LIMIT":
+            logger.warning("Remote Ollama provider rate limited for %s.", settings["remote_ollama_model"])
+            return "RATE_LIMIT"
+        if response and extract_json_object(response):
+            return normalize_enrichment(response, category)
+        if response:
+            logger.warning("Remote Ollama response for %s was not valid JSON.", settings["remote_ollama_model"])
+        return None
+
     if ENRICH_PROVIDER == "gemini":
         if secrets["gemini_api_key"]:
             response = await call_gemini(
@@ -1056,7 +1298,17 @@ async def update_memory(session, memory_id, category, original_content, enrichme
         return False
 
 
-async def process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown):
+async def process_item(
+    session,
+    semaphore,
+    item,
+    settings,
+    secrets,
+    limiter,
+    primary_cooldown,
+    fallback_cooldown,
+    remote_ollama_semaphore,
+):
     async with semaphore:
         memory_id = item["id"]
         content = item["content"]
@@ -1073,6 +1325,7 @@ async def process_item(session, semaphore, item, settings, secrets, limiter, pri
             limiter,
             primary_cooldown,
             fallback_cooldown,
+            remote_ollama_semaphore,
         )
         if enrichment == "RATE_LIMIT":
             return "RATE_LIMIT"
@@ -1096,12 +1349,13 @@ async def enrich_batch():
     fallback_requests_per_minute = max(1, settings["fallback_requests_per_minute"])
     primary_cooldown = PrimaryCooldownState()
     fallback_cooldown = FallbackCooldownState()
+    remote_ollama_semaphore = asyncio.Semaphore(max(1, int(settings.get("remote_ollama_concurrency", REMOTE_OLLAMA_CONCURRENCY))))
 
     if not pending:
         now = utc_now()
         save_status(
             {
-                "service": "enricher-worker",
+                "service": WORKER_NAME,
                 "status": "idle",
                 "last_cycle_started_at": now,
                 "last_cycle_finished_at": now,
@@ -1112,6 +1366,8 @@ async def enrich_batch():
                 "concurrency": concurrency,
                 "batch_size": settings["batch_size"],
                 "rate_limit_per_minute": fallback_requests_per_minute,
+                "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                 "updated_at": now,
             }
         )
@@ -1125,7 +1381,7 @@ async def enrich_batch():
 
     save_status(
         {
-            "service": "enricher-worker",
+            "service": WORKER_NAME,
             "status": "running",
             "last_cycle_started_at": started_at,
             "items_total": len(pending),
@@ -1134,6 +1390,8 @@ async def enrich_batch():
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
+            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
             "updated_at": started_at,
         }
     )
@@ -1144,7 +1402,7 @@ async def enrich_batch():
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
             asyncio.create_task(
-                process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown)
+                process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown, remote_ollama_semaphore)
             )
             for item in pending
         ]
@@ -1165,7 +1423,7 @@ async def enrich_batch():
                     finished_at = utc_now()
                     save_status(
                         {
-                            "service": "enricher-worker",
+                            "service": WORKER_NAME,
                             "status": "deferred",
                             "last_cycle_started_at": started_at,
                             "last_cycle_finished_at": finished_at,
@@ -1175,6 +1433,8 @@ async def enrich_batch():
                             "concurrency": concurrency,
                             "batch_size": settings["batch_size"],
                             "rate_limit_per_minute": fallback_requests_per_minute,
+                            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                             "updated_at": finished_at,
                         }
                     )
@@ -1188,17 +1448,19 @@ async def enrich_batch():
             finished_at = utc_now()
             save_status(
                 {
-                    "service": "enricher-worker",
+                    "service": WORKER_NAME,
                     "status": "error",
                     "last_cycle_started_at": started_at,
                     "last_cycle_finished_at": finished_at,
-                            "last_error": str(exc),
-                            "items_processed": enriched_count,
-                            "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
-                            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
-                            "concurrency": concurrency,
-                            "batch_size": settings["batch_size"],
-                            "rate_limit_per_minute": fallback_requests_per_minute,
+                    "last_error": str(exc),
+                    "items_processed": enriched_count,
+                    "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
+                    **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
+                    "concurrency": concurrency,
+                    "batch_size": settings["batch_size"],
+                    "rate_limit_per_minute": fallback_requests_per_minute,
+                    "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                    "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                     "updated_at": finished_at,
                 }
             )
@@ -1207,7 +1469,7 @@ async def enrich_batch():
     finished_at = utc_now()
     save_status(
         {
-            "service": "enricher-worker",
+            "service": WORKER_NAME,
             "status": "idle",
             "last_cycle_started_at": started_at,
             "last_cycle_finished_at": finished_at,
@@ -1218,6 +1480,8 @@ async def enrich_batch():
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
+            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
             "updated_at": finished_at,
         }
     )

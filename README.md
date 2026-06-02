@@ -277,9 +277,14 @@ It runs on a daily cadence by default, keeps only the newest complete backup for
 If you use Kopia as host-level backup storage, include at least:
 
 - `MEMORY_DATA_DIR`
-- `MEMORY_INGEST_DIR`
-- `MEMORY_OBSIDIAN_DIR`
+- any local source subtrees under `MEMORY_INGEST_DIR` that are not recreated from remote mounts
+- `/etc/docker/daemon.json`
+- `/etc/fuse.conf` if you use FUSE-backed remote mounts such as rclone
 - any edge configuration you keep outside the repo, such as reverse proxy or SSO files
+
+The remote source-mount configs for `docs/` and `gdrive/` live under `MEMORY_DATA_DIR`, so the backup above already preserves the settings needed to remount them after a rebuild. The data behind those mounts, plus the Obsidian vault, are treated as external source data and are not part of this host backup.
+
+The restore helper at [`../restore-stack.sh`](../restore-stack.sh) recreates the shared Docker networks, starts the source-mount stacks first, waits for the ingest mounts, and brings the active stacks back up in one pass.
 
 ## Restore
 
@@ -290,17 +295,19 @@ What you still need outside the repo:
 - the backup repository or storage target itself
 - the live `.env` values or an equivalent secrets restore path
 - any reverse proxy, SSO, DNS, or DDNS configuration you used outside this repo
-- any local source trees under `MEMORY_INGEST_DIR` or `MEMORY_OBSIDIAN_DIR` if those are not re-created from remote systems
+- any local source trees under `MEMORY_INGEST_DIR` if those are not re-created from remote systems
+- the Obsidian vault or its own upstream backup if you want that data restored separately
 - any worker state files you want to preserve for a clean resume, especially IMAP cursors and file state
 
 Restore order:
 
-1. Restore the runtime data and source trees.
+1. Restore the runtime data and any local source trees.
 2. Restore or recreate `.env`.
-3. Restore the PostgreSQL dump into the backend database if you are using the local backend.
-4. Restore `settings/`, `status/`, and `email-worker/accounts.json`.
-5. Start the stack.
-6. Confirm the backend, gateway, dashboard, and workers are healthy.
+3. Restore `/etc/docker/daemon.json` if you use a custom Docker daemon config.
+4. Restore the PostgreSQL dump into the backend database if you are using the local backend.
+5. Restore `settings/`, `status/`, and `email-worker/accounts.json`.
+6. Restore or reconnect any remote source-mount services such as rclone or OneDrive, restore `/etc/fuse.conf` if you use FUSE-backed mounts, then run the restore helper to recreate the Docker networks and bring the stack up.
+7. Confirm the backend, gateway, dashboard, and workers are healthy.
 
 If your sources are remote, like Gmail, GitHub, or Google Drive, the repo plus the backups are usually enough to get the service back on its feet and let the workers resync. If your documents or Obsidian vault are only local, those trees need to be part of your backup plan as well.
 

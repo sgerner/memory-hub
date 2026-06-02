@@ -25,6 +25,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
 GEMINI_OUTPUT_DIMENSIONALITY = int(os.getenv("GEMINI_OUTPUT_DIMENSIONALITY", os.getenv("EMBEDDING_DIMS", "2560")))
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/embedding-worker.json")
+PROCESSING_STALE_AFTER_SECONDS = int(os.getenv("EMBEDDING_PROCESSING_TIMEOUT_SECONDS", "900"))
 
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
 CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "1"))
@@ -309,7 +310,7 @@ async def migrate_table(category):
                    OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
                    OR (
                        embedding_status = 'processing'
-                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - {PROCESSING_STALE_AFTER_SECONDS}
                    )
                 """
             )
@@ -342,7 +343,7 @@ async def migrate_table(category):
                         OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
                         OR (
                             embedding_status = 'processing'
-                            AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                            AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - {PROCESSING_STALE_AFTER_SECONDS}
                         )
                     )
                       AND CAST(COALESCE(NULLIF(embedding_available_at, ''), '0') AS DOUBLE PRECISION) <= EXTRACT(EPOCH FROM NOW())
@@ -522,7 +523,7 @@ async def main():
                                 WHERE CAST(COALESCE(NULLIF(embedding_available_at, ''), '0') AS DOUBLE PRECISION) <= EXTRACT(EPOCH FROM NOW())
                                    OR (
                                        embedding_status = 'processing'
-                                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - 3600
+                                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - {PROCESSING_STALE_AFTER_SECONDS}
                                    )
                             ) AS due_count
                         FROM {table_name}

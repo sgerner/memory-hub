@@ -12,9 +12,47 @@ services:
       - LLM_REASONING_EFFORT=${LLM_REASONING_EFFORT:-low}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_FALLBACK_API_KEY=${LLM_FALLBACK_API_KEY:-}
+      - ENRICH_CATEGORIES=emails,obsidian,documents,code
+      - ENRICH_EMAIL_STRATEGY=large_only
+      - ENRICH_EMAIL_MAX_CHARS=8000
+      - ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS=true
       - ENRICH_BATCH_SIZE=${ENRICH_BATCH_SIZE:-100}
       - ENRICH_CONCURRENCY=${ENRICH_CONCURRENCY:-50}
       - GEMINI_CONCURRENCY=${GEMINI_CONCURRENCY:-8}
+      - SECRETS_PATH=/app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  enricher-worker-email-remote:
+    build: .
+    container_name: enricher-worker-email-remote
+    restart: unless-stopped
+    environment:
+      - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
+      - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      - ENRICH_PROVIDER=remote_ollama
+      - ENRICH_CATEGORIES=emails
+      - ENRICH_EMAIL_STRATEGY=small_only
+      - ENRICH_EMAIL_MAX_CHARS=8000
+      - ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS=true
+      - WORKER_NAME=enricher-worker-email-remote
+      - ENRICH_BATCH_SIZE=${ENRICH_REMOTE_BATCH_SIZE:-50}
+      - ENRICH_CONCURRENCY=${ENRICH_REMOTE_CONCURRENCY:-2}
+      - REMOTE_OLLAMA_HOST=${REMOTE_OLLAMA_HOST:-http://192.168.29.159:11434}
+      - REMOTE_OLLAMA_MODEL=${REMOTE_OLLAMA_MODEL:-qwen3.5:9b}
+      - REMOTE_OLLAMA_TIMEOUT_SECONDS=${REMOTE_OLLAMA_TIMEOUT_SECONDS:-180}
+      - REMOTE_OLLAMA_TEXT_LIMIT=${REMOTE_OLLAMA_TEXT_LIMIT:-4000}
+      - REMOTE_OLLAMA_NUM_PREDICT=${REMOTE_OLLAMA_NUM_PREDICT:-384}
+      - REMOTE_OLLAMA_TEMPERATURE=${REMOTE_OLLAMA_TEMPERATURE:-0.1}
+      - REMOTE_OLLAMA_CONCURRENCY=${REMOTE_OLLAMA_CONCURRENCY:-2}
+      - REMOTE_OLLAMA_THINK=${REMOTE_OLLAMA_THINK:-false}
+      - STATUS_PATH=/app/status/enricher-worker-email-remote.json
       - SECRETS_PATH=/app/shared-settings/secrets.json
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
