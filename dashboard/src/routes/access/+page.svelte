@@ -31,6 +31,7 @@ memorex queue`;
 
 Before answering, search Memory Hub for relevant context.
 Store durable preferences, decisions, procedures, and project facts after they are confirmed.
+Do not store low-information replies or transient command execution noise, such as yes/no acknowledgements, git commit/push steps, build logs, or one-off shell commands, unless they establish a durable decision or procedure.
 Use semantic recall first, then list or inspect records when you need provenance.
 Prefer archive/forget over deletion unless a human explicitly requests purging.
 
@@ -177,7 +178,7 @@ Available tools:
 				</div>
 				<div class="flex gap-3 border-t border-white/5 pt-3.5">
 					<span class="font-mono text-[0.7rem] text-primary-400">02 /</span>
-					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Commit Confirmed Facts:</span> Save durable preferences, key project structures, and confirmed facts during steps.</p>
+					<p class="text-xs text-surface-200 font-mono leading-relaxed"><span class="text-surface-100 font-semibold font-sans">Commit Confirmed Facts:</span> Save durable preferences, key project structures, and confirmed facts during steps. Skip yes/no acknowledgements, transient commands, build logs, and git workflow noise.</p>
 				</div>
 				<div class="flex gap-3 border-t border-white/5 pt-3.5">
 					<span class="font-mono text-[0.7rem] text-primary-400">03 /</span>

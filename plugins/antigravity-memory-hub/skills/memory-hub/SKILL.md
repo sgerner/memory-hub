@@ -14,3 +14,4 @@ Use Memory Hub to keep agents consistent across turns.
 - Prefer durable facts over re-deriving the same context repeatedly.
 - Keep stored memories short, specific, and attributable.
 - Avoid storing speculative content unless the user explicitly asks.
+- Avoid storing low-information replies or transient command execution noise, such as yes/no acknowledgements, git commit/push steps, build logs, or one-off shell commands, unless they establish a durable decision or procedure.

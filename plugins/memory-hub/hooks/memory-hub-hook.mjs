@@ -143,6 +143,62 @@ function extractAssistant(input) {
   return latestMessageText(input, ['assistant', 'agent']);
 }
 
+function normalizeForClassification(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[`*_~>#"'()[\]{},.!?:;]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wordCount(value) {
+  const words = normalizeForClassification(value).match(/[a-z0-9][a-z0-9_-]*/g);
+  return words ? words.length : 0;
+}
+
+function isLowInformationPrompt(prompt) {
+  const normalized = normalizeForClassification(prompt);
+  if (!normalized) return true;
+  if (wordCount(normalized) > 6) return false;
+
+  return /^(?:y|yes|yes please|yeah|yeah please|yep|yep please|no|nope|nah|no thanks|ok|okay|k|sure|sounds good|sounds right|that works|sgtm|thanks|thank you|continue|go ahead|go for it|do it|proceed|please do|ship it|looks good|lgtm|run it|try it|retry|again|same|confirm|confirmed)$/.test(
+    normalized
+  );
+}
+
+function isTransientOperationalPrompt(prompt) {
+  const normalized = normalizeForClassification(prompt);
+  if (!normalized) return true;
+
+  const commandPatterns = [
+    /^(?:run|rerun|execute|try)\s+(?:the\s+)?(?:tests?|checks?|build|lint|formatter|format|typecheck|ci)\b/,
+    /^(?:npm|pnpm|yarn|bun|make|just|pytest|ruff|black|cargo|go|docker|docker compose)\s+\S+/,
+    /^git\s+(?:add|commit|push|pull|fetch|merge|rebase|checkout|switch|status|log|diff|stash|reset|amend|tag)\b/,
+    /^(?:please\s+)?(?:commit|push)\b(?:\s+(?:the\s+)?changes|\s+to\s+(?:origin|main|master|upstream)|\s+the\s+branch)?\b/,
+    /^(?:please\s+)?commit\s+and\s+push\b/,
+  ];
+  if (commandPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  const logLikePatterns = [
+    /\b(?:build|test|lint|typecheck|ci|workflow|job)\s+(?:failed|passed|errored|timed out|is failing|is passing)\b/,
+    /\b(?:exit code|stack trace|traceback|exception|error log|command output)\b/,
+  ];
+  return logLikePatterns.some((pattern) => pattern.test(normalized)) && wordCount(normalized) < 20;
+}
+
+function shouldStoreTurnSummary(prompt, assistantMessage) {
+  const promptText = String(prompt || '').trim();
+  const assistantText = String(assistantMessage || '').trim();
+  if (!promptText && !assistantText) return false;
+  if (isLowInformationPrompt(promptText)) return false;
+  if (isTransientOperationalPrompt(promptText)) return false;
+  if (wordCount(promptText) < 4 && wordCount(assistantText) < 12) return false;
+
+  return wordCount(promptText) >= 4 || wordCount(assistantText) >= 20;
+}
+
 function stateKeys(input) {
   return [
     input?.turn_id,
@@ -357,7 +413,7 @@ async function stop(input) {
     }
     const prompt = extractPrompt(input) || String(saved?.prompt || '').trim();
 
-    if (prompt || lastAssistantMessage) {
+    if (shouldStoreTurnSummary(prompt, lastAssistantMessage)) {
       await gatewayRequest('/v1/memories', {
         method: 'POST',
         body: {
@@ -382,6 +438,12 @@ async function stop(input) {
             raw_event_keys: Object.keys(input || {}).slice(0, 40).join(','),
           },
         },
+      });
+    } else if (process.env.MEMORY_HUB_HOOK_DEBUG) {
+      debugLog('Stop skipped transient summary', {
+        keys: Object.keys(input || {}).slice(0, 40),
+        prompt: clip(prompt, 240),
+        assistant: clip(lastAssistantMessage, 240),
       });
     }
   } catch (error) {

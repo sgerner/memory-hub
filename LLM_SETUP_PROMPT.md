@@ -40,6 +40,7 @@ Operational assumptions:
 - Enrichment uses a remote LLM and then re-saves through the backend so the final text can be re-embedded.
 - The dashboard talks to the gateway, not directly to the backend.
 - Runtime settings, secrets, worker state, and backups are file-backed under MEMORY_DATA_DIR.
+- Do not treat low-information replies or transient command execution noise, such as yes/no acknowledgements, git commit/push steps, or build logs, as durable memory unless they establish a lasting decision or procedure.
 
 Deployment rules:
 - If the user wants a full local stack, create a .env from .env.example, run `make init`, then `make up`.

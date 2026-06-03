@@ -18,6 +18,7 @@ Use the Memory Hub tools directly when the task benefits from prior context or d
 - Call `memory_forget` for soft deletion.
 - Call `memory_overview` or `memory_queue_status` when you need operational context.
 - Avoid storing secrets, temporary scratch work, or speculative notes.
+- Avoid storing low-information replies or transient command execution noise, such as yes/no acknowledgements, git commit/push steps, build logs, or one-off shell commands, unless they establish a durable decision or procedure.
 
 ## Behavior
 
