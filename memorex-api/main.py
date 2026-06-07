@@ -12,6 +12,8 @@ from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
 import requests
 
 # Configuration
@@ -23,6 +25,7 @@ POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3-embedding:4b")
+VERCEL_API_KEY = os.getenv("VERCEL_API_KEY", "")
 EMBEDDING_DIMS = int(os.getenv("EMBEDDING_DIMS", "2560"))
 HNSW_EF_SEARCH = int(os.getenv("VECTOR_INDEX_EF_SEARCH", "100"))
 SEARCH_VECTOR_WEIGHT = float(os.getenv("SEARCH_VECTOR_WEIGHT", "0.72"))
@@ -108,120 +111,145 @@ embedding_cache: dict[str, tuple[float, List[float]]] = {}
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+try:
+    from sentence_transformers import CrossEncoder
+    reranker_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+except Exception as e:
+    logger.warning(f"Failed to load cross-encoder: {e}")
+    reranker_model = None
+
+def rerank_candidates(query_text: str, candidates: list[Dict[str, Any]], limit: int) -> list[Dict[str, Any]]:
+    if not reranker_model or not candidates:
+        return candidates[:limit]
+    pairs = [(query_text, str(cand.get("document", ""))) for cand in candidates]
+    try:
+        scores = reranker_model.predict(pairs)
+        for cand, score in zip(candidates, scores):
+            cand["cross_encoder_score"] = float(score)
+        candidates.sort(key=lambda item: item.get("cross_encoder_score", -9999), reverse=True)
+    except Exception as e:
+        logger.error(f"Error during reranking: {e}")
+    return candidates[:limit]
+
 
 def ensure_vector_indexes():
-    conn = None
     try:
-        conn = get_db_connection()
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
-            for category in sorted(ALLOWED_CATEGORIES):
-                table_name = table_for(category)
-                cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
-                if not cur.fetchone()["to_regclass"]:
-                    continue
-
-                existing_cols = existing_columns(cur, table_name)
-
-                if category == "emails" and {"account", "folder", "uid"}.issubset(existing_cols):
-                    email_index_name = f"{table_name}_account_folder_uid_idx"
-                    cur.execute("SELECT to_regclass(%s)", (f"public.{email_index_name}",))
+        with get_db_connection() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                for category in sorted(ALLOWED_CATEGORIES):
+                    table_name = table_for(category)
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
                     if not cur.fetchone()["to_regclass"]:
-                        logger.info("Creating email lookup index %s on %s", email_index_name, table_name)
-                        cur.execute(f"CREATE INDEX CONCURRENTLY {email_index_name} ON {table_name} (account, folder, uid)")
-                        logger.info("Email lookup index ready: %s", email_index_name)
+                        continue
 
-                operational_indexes: list[tuple[str, str]] = []
-                if "embedding_status" in existing_cols:
-                    operational_indexes.append(
-                        (
-                            f"{table_name}_embedding_status_available_idx",
-                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lower(embedding_status), embedding_available_at, id)",
-                        )
-                    )
-                if "embedding" in existing_cols:
-                    operational_indexes.append(
-                        (
-                            f"{table_name}_embedding_missing_idx",
-                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (id) WHERE embedding IS NULL",
-                        )
-                    )
-                if "needs_enrichment" in existing_cols:
-                    operational_indexes.append(
-                        (
-                            f"{table_name}_needs_enrichment_id_idx",
-                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (LOWER(needs_enrichment), id DESC)",
-                        )
-                    )
-                if "lifecycle_status" in existing_cols:
-                    operational_indexes.append(
-                        (
-                            f"{table_name}_lifecycle_status_id_idx",
-                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lifecycle_status, id DESC)",
-                        )
-                    )
+                    existing_cols = existing_columns(cur, table_name)
 
-                for index_name, create_sql in operational_indexes:
+                    if category == "emails" and {"account", "folder", "uid"}.issubset(existing_cols):
+                        email_index_name = f"{table_name}_account_folder_uid_idx"
+                        cur.execute("SELECT to_regclass(%s)", (f"public.{email_index_name}",))
+                        if not cur.fetchone()["to_regclass"]:
+                            logger.info("Creating email lookup index %s on %s", email_index_name, table_name)
+                            cur.execute(f"CREATE INDEX CONCURRENTLY {email_index_name} ON {table_name} (account, folder, uid)")
+                            logger.info("Email lookup index ready: %s", email_index_name)
+
+                    if category == "emails" and {"account", "message_id"}.issubset(existing_cols):
+                        email_msg_index_name = f"{table_name}_account_message_id_idx"
+                        cur.execute("SELECT to_regclass(%s)", (f"public.{email_msg_index_name}",))
+                        if not cur.fetchone()["to_regclass"]:
+                            logger.info("Creating email message_id lookup index %s on %s", email_msg_index_name, table_name)
+                            cur.execute(f"CREATE INDEX CONCURRENTLY {email_msg_index_name} ON {table_name} (account, message_id)")
+                            logger.info("Email message_id lookup index ready: %s", email_msg_index_name)
+
+                    operational_indexes: list[tuple[str, str]] = []
+                    if "embedding_status" in existing_cols:
+                        operational_indexes.append(
+                            (
+                                f"{table_name}_embedding_status_available_idx",
+                                f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lower(embedding_status), embedding_available_at, id)",
+                            )
+                        )
+                    if "embedding" in existing_cols:
+                        operational_indexes.append(
+                            (
+                                f"{table_name}_embedding_missing_idx",
+                                f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (id) WHERE embedding IS NULL",
+                            )
+                        )
+                    if "needs_enrichment" in existing_cols:
+                        operational_indexes.append(
+                            (
+                                f"{table_name}_needs_enrichment_id_idx",
+                                f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (LOWER(needs_enrichment), id DESC)",
+                            )
+                        )
+                    if "lifecycle_status" in existing_cols:
+                        operational_indexes.append(
+                            (
+                                f"{table_name}_lifecycle_status_id_idx",
+                                f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (lifecycle_status, id DESC)",
+                            )
+                        )
+
+                    for index_name, create_sql in operational_indexes:
+                        cur.execute("SELECT to_regclass(%s)", (f"public.{index_name}",))
+                        if not cur.fetchone()["to_regclass"]:
+                            logger.info("Creating operational index %s on %s", index_name, table_name)
+                            cur.execute(create_sql.format(name=index_name))
+                            logger.info("Operational index ready: %s", index_name)
+
+                    index_name = f"{table_name}_embedding_halfvec_hnsw_idx"
                     cur.execute("SELECT to_regclass(%s)", (f"public.{index_name}",))
                     if not cur.fetchone()["to_regclass"]:
-                        logger.info("Creating operational index %s on %s", index_name, table_name)
-                        cur.execute(create_sql.format(name=index_name))
-                        logger.info("Operational index ready: %s", index_name)
+                        logger.info("Creating vector index %s on %s", index_name, table_name)
+                        cur.execute(
+                            f"CREATE INDEX CONCURRENTLY {index_name} ON {table_name} USING hnsw ((embedding::halfvec({EMBEDDING_DIMS})) halfvec_cosine_ops) WITH (m=32, ef_construction=128)"
+                        )
+                        logger.info("Vector index ready: %s", index_name)
 
-                index_name = f"{table_name}_embedding_halfvec_hnsw_idx"
-                cur.execute("SELECT to_regclass(%s)", (f"public.{index_name}",))
-                if not cur.fetchone()["to_regclass"]:
-                    logger.info("Creating vector index %s on %s", index_name, table_name)
+                    # Prewarm the vector index
+                    try:
+                        cur.execute("SELECT pg_prewarm(%s)", (index_name,))
+                        logger.info("Prewarmed vector index: %s", index_name)
+                    except Exception as pwe:
+                        logger.warning("Failed to prewarm index %s: %s", index_name, pwe)
+
+                    if category not in LEXICAL_INDEX_CATEGORIES:
+                        continue
+                    lexical_index_name = f"{table_name}_document_50k_simple_tsv_idx"
                     cur.execute(
-                        f"CREATE INDEX CONCURRENTLY {index_name} ON {table_name} USING hnsw ((embedding::halfvec({EMBEDDING_DIMS})) halfvec_cosine_ops) WITH (m=32, ef_construction=128)"
+                        """
+                        SELECT i.indisvalid AND i.indisready AS ready
+                        FROM pg_index i
+                        JOIN pg_class c ON c.oid = i.indexrelid
+                        WHERE c.relname = %s
+                        """,
+                        (lexical_index_name,),
                     )
-                    logger.info("Vector index ready: %s", index_name)
-
-                # Prewarm the vector index
-                try:
-                    cur.execute("SELECT pg_prewarm(%s)", (index_name,))
-                    logger.info("Prewarmed vector index: %s", index_name)
-                except Exception as pwe:
-                    logger.warning("Failed to prewarm index %s: %s", index_name, pwe)
-
-                if category not in LEXICAL_INDEX_CATEGORIES:
-                    continue
-                lexical_index_name = f"{table_name}_document_50k_simple_tsv_idx"
-                cur.execute(
-                    """
-                    SELECT i.indisvalid AND i.indisready AS ready
-                    FROM pg_index i
-                    JOIN pg_class c ON c.oid = i.indexrelid
-                    WHERE c.relname = %s
-                    """,
-                    (lexical_index_name,),
-                )
-                lexical_status = cur.fetchone()
-                if lexical_status and not lexical_status["ready"]:
-                    logger.info("Dropping invalid lexical index %s on %s", lexical_index_name, table_name)
-                    cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {lexical_index_name}")
-                    lexical_status = None
-                if not lexical_status:
-                    logger.info("Creating lexical index %s on %s", lexical_index_name, table_name)
-                    cur.execute(
-                        f"CREATE INDEX CONCURRENTLY {lexical_index_name} ON {table_name} USING gin (to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS})))"
-                    )
-                    logger.info("Lexical index ready: %s", lexical_index_name)
+                    lexical_status = cur.fetchone()
+                    if lexical_status and not lexical_status["ready"]:
+                        logger.info("Dropping invalid lexical index %s on %s", lexical_index_name, table_name)
+                        cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {lexical_index_name}")
+                        lexical_status = None
+                    if not lexical_status:
+                        logger.info("Creating lexical index %s on %s", lexical_index_name, table_name)
+                        cur.execute(
+                            f"CREATE INDEX CONCURRENTLY {lexical_index_name} ON {table_name} USING gin (to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS})))"
+                        )
+                        logger.info("Lexical index ready: %s", lexical_index_name)
     except Exception as exc:
         logger.error("Vector index bootstrap failed: %s", exc)
-    finally:
-        if conn is not None:
-            conn.close()
 
+
+db_pool = None
 
 @app.on_event("startup")
 async def bootstrap_background_tasks():
-    threading.Thread(target=ensure_vector_indexes, daemon=True).start()
-
-def get_db_connection():
-    return psycopg2.connect(
+    global db_pool
+    db_pool = ThreadedConnectionPool(
+        1, 50,
         dbname=POSTGRES_DB,
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
@@ -229,6 +257,29 @@ def get_db_connection():
         port=POSTGRES_PORT,
         cursor_factory=RealDictCursor
     )
+    threading.Thread(target=ensure_vector_indexes, daemon=True).start()
+
+@app.on_event("shutdown")
+async def shutdown_db_pool():
+    if db_pool:
+        db_pool.closeall()
+
+@contextmanager
+def get_db_connection():
+    conn = db_pool.getconn()
+    conn.autocommit = False
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        db_pool.putconn(conn)
 
 def split_embedding_text(text: str, chunk_size: int = EMBED_CHUNK_SIZE, overlap: int = EMBED_CHUNK_OVERLAP) -> List[str]:
     cleaned = str(text).replace('\x00', '').strip()
@@ -292,10 +343,27 @@ def average_embeddings(vectors: List[List[float]]) -> List[float]:
 
 
 def request_embedding_chunk(text: str, chunk_size: int = EMBED_CHUNK_SIZE) -> List[float]:
+    if VERCEL_API_KEY:
+        try:
+            vercel_resp = requests.post(
+                "https://ai-gateway.vercel.sh/v1/embeddings",
+                headers={"Authorization": f"Bearer {VERCEL_API_KEY}", "Content-Type": "application/json"},
+                json={"input": text, "model": "alibaba/qwen3-embedding-4b"},
+                timeout=OLLAMA_EMBED_TIMEOUT
+            )
+            if vercel_resp.status_code == 200:
+                data = vercel_resp.json()
+                if "data" in data and len(data["data"]) > 0:
+                    return data["data"][0]["embedding"]
+            else:
+                logger.warning("Vercel Gateway failed (HTTP %s): %s. Falling back to local Ollama.", vercel_resp.status_code, vercel_resp.text)
+        except Exception as e:
+            logger.warning("Vercel Gateway error: %s. Falling back to local Ollama.", e)
+
     try:
         response = requests.post(
             f"{OLLAMA_HOST}/api/embeddings",
-            json={"model": DEFAULT_MODEL, "prompt": text},
+            json={"model": DEFAULT_MODEL, "prompt": text, "keep_alive": -1},
             timeout=OLLAMA_EMBED_TIMEOUT,
         )
         if response.status_code == 200:
@@ -353,6 +421,12 @@ class MemoryCreate(BaseModel):
     category: str
     metadata: Optional[Dict[str, Any]] = None
     embedding_text: Optional[str] = None
+    related_to: Optional[List[str]] = None
+
+class FilterCriteria(BaseModel):
+    key: str
+    op: str
+    value: Any
 
 class SearchQuery(BaseModel):
     query: str
@@ -360,6 +434,8 @@ class SearchQuery(BaseModel):
     limit: Optional[int] = 10
     metadata: Optional[Dict[str, Any]] = None
     ef_search: Optional[int] = None
+    filters: Optional[List[FilterCriteria]] = None
+    recency_decay: Optional[float] = None
 
 class MultiSearchQuery(BaseModel):
     query: str
@@ -367,6 +443,8 @@ class MultiSearchQuery(BaseModel):
     limit: Optional[int] = 10
     metadata: Optional[Dict[str, Any]] = None
     ef_search: Optional[int] = None
+    filters: Optional[List[FilterCriteria]] = None
+    recency_decay: Optional[float] = None
 
 class MemoryUpdate(BaseModel):
     id: str
@@ -374,6 +452,7 @@ class MemoryUpdate(BaseModel):
     content: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     embedding_text: Optional[str] = None
+    related_to: Optional[List[str]] = None
 
 class MemoryDelete(BaseModel):
     id: str
@@ -410,7 +489,7 @@ def safe_metadata_key(key: str) -> Optional[str]:
         return None
     return safe_key
 
-def build_metadata_where(metadata: Optional[Dict[str, Any]], existing_cols: set[str], alias: str = "t") -> tuple[str, list[str]]:
+def build_metadata_where(metadata: Optional[Dict[str, Any]], filters: Optional[List[FilterCriteria]], existing_cols: set[str], alias: str = "t") -> tuple[str, list[str]]:
     where_clauses = []
     where_vals = []
     if metadata:
@@ -419,6 +498,31 @@ def build_metadata_where(metadata: Optional[Dict[str, Any]], existing_cols: set[
             if safe_key in existing_cols:
                 where_clauses.append(f"{alias}.{safe_key} = %s")
                 where_vals.append(str(value))
+    if filters:
+        for f in filters:
+            safe_key = safe_metadata_key(f.key)
+            if safe_key in existing_cols:
+                if f.op == "=":
+                    where_clauses.append(f"{alias}.{safe_key} = %s")
+                    where_vals.append(str(f.value))
+                elif f.op == ">":
+                    where_clauses.append(f"{alias}.{safe_key} > %s")
+                    where_vals.append(str(f.value))
+                elif f.op == ">=":
+                    where_clauses.append(f"{alias}.{safe_key} >= %s")
+                    where_vals.append(str(f.value))
+                elif f.op == "<":
+                    where_clauses.append(f"{alias}.{safe_key} < %s")
+                    where_vals.append(str(f.value))
+                elif f.op == "<=":
+                    where_clauses.append(f"{alias}.{safe_key} <= %s")
+                    where_vals.append(str(f.value))
+                elif f.op == "!=":
+                    where_clauses.append(f"{alias}.{safe_key} != %s")
+                    where_vals.append(str(f.value))
+                elif f.op.lower() in ("in", "contains"):
+                    where_clauses.append(f"{alias}.{safe_key} ILIKE %s")
+                    where_vals.append(f"%{f.value}%")
     return ("WHERE " + " AND ".join(where_clauses), where_vals) if where_clauses else ("", [])
 
 def build_lexical_tsquery(query_text: str) -> str:
@@ -449,7 +553,7 @@ def text_score(rank: Any, max_rank: float) -> float:
         return 0.0
     return max(0.0, min(1.0, value / max_rank))
 
-def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int) -> list[Dict[str, Any]]:
+def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int, recency_decay: Optional[float] = None) -> list[Dict[str, Any]]:
     max_rank = max((float(row.get("lexical_rank") or 0) for row in rows), default=0.0)
     by_id: dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -473,24 +577,40 @@ def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int) ->
         current["lexical_rank"] = max(float(current.get("lexical_rank") or 0), float(row.get("lexical_rank") or 0))
 
     results = []
+    now_ts = time.time()
     for row in by_id.values():
         score = (SEARCH_VECTOR_WEIGHT * vector_score(row.get("distance"))) + (
             SEARCH_TEXT_WEIGHT * text_score(row.get("lexical_rank"), max_rank)
         )
+        if recency_decay and recency_decay > 0:
+            created_at_str = row.get("metadata", {}).get("created_at") or row.get("metadata", {}).get("recorded_at")
+            if created_at_str:
+                try:
+                    if "T" in str(created_at_str):
+                        dt = datetime.fromisoformat(str(created_at_str).replace("Z", "+00:00"))
+                        created_ts = dt.timestamp()
+                    else:
+                        created_ts = float(created_at_str)
+                    age_days = (now_ts - created_ts) / 86400.0
+                    if age_days > 0:
+                        decay_multiplier = math.pow(0.5, age_days / recency_decay)
+                        score = score * decay_multiplier
+                except Exception:
+                    pass
         row["score"] = score
         results.append(row)
 
     results.sort(key=lambda item: (-float(item.get("score") or 0), float(item.get("distance") or 99), -float(item.get("lexical_rank") or 0)))
     return results[:limit]
 
-def search_category(cur, category: str, query_text: str, emb_str: str, limit: int, metadata: Optional[Dict[str, Any]]) -> list[Dict[str, Any]]:
+def search_category(cur, category: str, query_text: str, emb_str: str, limit: int, metadata: Optional[Dict[str, Any]], filters: Optional[List[FilterCriteria]] = None, recency_decay: Optional[float] = None) -> list[Dict[str, Any]]:
     table_name = table_for(category)
     cur.execute("SELECT to_regclass(%s)", (table_name,))
     if not cur.fetchone()["to_regclass"]:
         return []
 
     existing_cols = existing_columns(cur, table_name)
-    where_sql, where_vals = build_metadata_where(metadata, existing_cols)
+    where_sql, where_vals = build_metadata_where(metadata, filters, existing_cols)
     vector_limit = max(limit * 3, 20)
     lexical_limit = max(limit * SEARCH_LEXICAL_MULTIPLIER, 20)
 
@@ -501,10 +621,10 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
                {metadata_projection('t')}
         FROM {table_name} t
         {where_sql}
-        ORDER BY distance ASC
+        ORDER BY embedding::halfvec({EMBEDDING_DIMS}) <=> CAST(%s AS halfvec({EMBEDDING_DIMS})) ASC
         LIMIT %s
     """
-    cur.execute(vector_query, [emb_str] + where_vals + [vector_limit])
+    cur.execute(vector_query, [emb_str] + where_vals + [emb_str, vector_limit])
     rows = list(cur.fetchall())
 
     lexical_index_name = f"{table_name}_document_50k_simple_tsv_idx"
@@ -519,11 +639,11 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
     )
     index_status = cur.fetchone()
     if not index_status or not index_status["ready"]:
-        return combine_candidates(category, rows, limit)
+        return combine_candidates(category, rows, limit, recency_decay)
 
     lexical_tsquery = build_lexical_tsquery(query_text)
     if not lexical_tsquery:
-        return combine_candidates(category, rows, limit)
+        return combine_candidates(category, rows, limit, recency_decay)
 
     lexical_query = f"""
         SELECT id, document,
@@ -547,7 +667,7 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         cur.execute("ROLLBACK TO SAVEPOINT lexical_search")
         cur.execute("RELEASE SAVEPOINT lexical_search")
         logger.warning("Lexical search timed out for category=%s query=%r", category, query_text[:120])
-    return combine_candidates(category, rows, limit)
+    return combine_candidates(category, rows, limit, recency_decay)
 
 def _ensure_table(conn, category: str, metadata: Dict[str, Any]):
     table_name = table_for(category)
@@ -636,7 +756,8 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
             embedding_source_override = None
         now_str = str(time.time())
         metadata = data.metadata or {}
-        
+        if data.related_to:
+            metadata["related_to"] = json.dumps(data.related_to)
         with get_db_connection() as conn:
             _ensure_table(conn, data.category, metadata)
             table_name = table_for(data.category)
@@ -757,14 +878,18 @@ def search(data: SearchQuery, token: str = Depends(verify_token)):
                 ef_search = data.ef_search or HNSW_EF_SEARCH
                 cur.execute(f"SET hnsw.ef_search = {ef_search}")
                 emb_str = f"[{','.join(map(str, emb))}]"
+                fetch_limit = max(1, min(int(data.limit or 10), 100)) * 2
                 results = search_category(
                     cur,
                     data.category,
                     data.query,
                     emb_str,
-                    max(1, min(int(data.limit or 10), 100)),
+                    fetch_limit,
                     data.metadata,
+                    data.filters,
+                    data.recency_decay,
                 )
+                results = rerank_candidates(data.query, results, max(1, min(int(data.limit or 10), 100)))
                     
         return {"success": True, "results": results}
     except Exception as e:
@@ -779,8 +904,8 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
         for category in categories:
             table_for(category)
 
-        limit = max(1, min(int(data.limit or 10), 100))
-        per_category_limit = max(limit * 3, 20)
+        fetch_limit = max(1, min(int(data.limit or 10), 100)) * 2
+        per_category_limit = max(fetch_limit * 3, 20)
         started_at = time.time()
         emb = get_cached_embedding(data.query)
         if not emb:
@@ -801,15 +926,18 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
                             emb_str,
                             per_category_limit,
                             data.metadata,
+                            data.filters,
+                            data.recency_decay,
                         )
                     )
 
-        combined.sort(key=lambda item: (-float(item.get("score") or 0), float(item.get("distance") or 99), -float(item.get("lexical_rank") or 0)))
+        combined = combine_candidates("multi", combined, fetch_limit, data.recency_decay)
+        final_results = rerank_candidates(data.query, combined, max(1, min(int(data.limit or 10), 100)))
+
         return {
             "success": True,
-            "results": combined[:limit],
-            "searched_categories": categories,
-            "duration_ms": int((time.time() - started_at) * 1000),
+            "results": final_results,
+            "latency_ms": round((time.time() - started_at) * 1000, 2),
         }
     except Exception as e:
         logger.error(f"Error in /search-multi: {e}")
@@ -837,7 +965,7 @@ def queue_status(token: str = Depends(verify_token)):
                         embedding_conditions = ["embedding IS NULL"]
                         if "embedding_status" in existing_cols:
                             embedding_conditions.append(
-                                "COALESCE(LOWER(embedding_status), 'pending') IN ('pending', 'retry', 'processing')"
+                                "(LOWER(embedding_status) IN ('pending', 'retry', 'processing') OR embedding_status IS NULL)"
                             )
                         cur.execute(
                             f"SELECT COUNT(*) AS count FROM {table_name} WHERE {' OR '.join(embedding_conditions)}"
@@ -924,7 +1052,8 @@ def update(data: MemoryUpdate, token: str = Depends(verify_token)):
         with get_db_connection() as conn:
             table_name = table_for(data.category)
             metadata = data.metadata or {}
-            
+            if data.related_to:
+                metadata["related_to"] = json.dumps(data.related_to)
             _ensure_table(conn, data.category, metadata)
             
             set_clauses = ["updated_at = %s"]

@@ -39,9 +39,10 @@ memorex queue`;
 
 	const agentSnippet = `# Memory Hub
 
-Before answering, search Memory Hub for relevant context.
+Before answering, search Memory Hub for relevant context using semantic recall.
+Use recencyDecay and advanced filters in memory_recall to refine search precision.
 Store durable preferences, decisions, procedures, and project facts after they are confirmed.
-Use semantic recall first, then list or inspect records when you need provenance.
+When storing or patching, link related concepts using relatedTo to build a cohesive knowledge graph.
 Prefer archive/forget over deletion unless a human explicitly requests purging.
 
 Available tools:

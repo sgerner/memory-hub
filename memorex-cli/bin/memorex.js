@@ -12,10 +12,10 @@ function usage() {
   memorex health
   memorex overview [--limit <number>]
   memorex queue
-  memorex recall <query> [--category <name>] [--limit <number>] [--inactive]
+  memorex recall <query> [--category <name>] [--limit <number>] [--inactive] [--recency-decay <number>] [--filter key:op:value]
   memorex list <category> [--limit <number>] [--offset <number>] [--inactive]
-  memorex store <content> [--category agent] [--kind fact] [--importance 0.5] [--confidence 0.8] [--retention normal] [--agent <name>]
-  memorex patch <category> <id> [--content <text>] [--agent <name>] [--meta key=value]
+  memorex store <content> [--category agent] [--kind fact] [--importance 0.5] [--confidence 0.8] [--retention normal] [--agent <name>] [--related-to <id1,id2>]
+  memorex patch <category> <id> [--content <text>] [--agent <name>] [--meta key=value] [--related-to <id1,id2>]
   memorex supersede <category> <id> <content> [--new-category agent] [--kind fact] [--reason <text>] [--agent <name>]
   memorex archive <category> <id> --reason <text> [--agent <name>]
   memorex forget <category> <id> --reason <text> [--agent <name>]
@@ -45,9 +45,9 @@ function parse(tokens) {
       throw new Error(`--${key} requires a value`);
     }
     index += 1;
-    if (key === "meta") {
-      options.meta ??= [];
-      options.meta.push(value);
+    if (key === "meta" || key === "filter") {
+      options[key] ??= [];
+      options[key].push(value);
     } else {
       options[key] = value;
     }
@@ -140,6 +140,11 @@ async function main() {
         limit: options.limit ? optionNumber(options, "limit") : undefined,
         include_inactive: Boolean(options.inactive),
         metadata: metadata(options.meta),
+        recency_decay: options["recency-decay"] ? optionNumber(options, "recency-decay") : undefined,
+        filters: options.filter ? options.filter.map(f => {
+          const parts = f.split(':');
+          return { key: parts[0], op: parts[1], value: parts.slice(2).join(':') };
+        }) : undefined,
       }, config);
       break;
     case "list":
@@ -162,6 +167,7 @@ async function main() {
         retention: options.retention,
         source_agent: options.agent,
         metadata: metadata(options.meta),
+        related_to: options["related-to"] ? options["related-to"].split(",") : undefined,
       }, config);
       break;
     case "patch":
@@ -170,6 +176,7 @@ async function main() {
         content: options.content,
         source_agent: options.agent,
         metadata: metadata(options.meta),
+        related_to: options["related-to"] ? options["related-to"].split(",") : undefined,
       }, config);
       break;
     case "supersede":

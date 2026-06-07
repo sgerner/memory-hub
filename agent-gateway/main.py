@@ -131,6 +131,7 @@ class MemoryStore(BaseModel):
     retention: Literal["ephemeral", "normal", "durable"] = "normal"
     source_agent: str = Field(default="unknown", max_length=120)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    related_to: list[str] | None = Field(default=None, max_items=50)
 
     @field_validator("category")
     @classmethod
@@ -144,11 +145,13 @@ class MemoryStore(BaseModel):
 
 
 class MemoryRecall(BaseModel):
-    query: str = Field(min_length=1, max_length=10_000)
-    categories: list[str] | None = None
-    limit: int = Field(default=8, ge=1, le=50)
+    query: str = Field(min_length=1, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=50)
+    categories: list[str] | None = Field(default=None, max_items=10)
     include_inactive: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    filters: list[dict[str, Any]] | None = None
+    recency_decay: float | None = None
 
     @field_validator("categories")
     @classmethod
@@ -168,6 +171,7 @@ class MemoryPatch(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=500_000)
     source_agent: str = Field(default="unknown", max_length=120)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    related_to: list[str] | None = Field(default=None, max_items=50)
 
     @field_validator("metadata")
     @classmethod
@@ -239,10 +243,10 @@ class MemoryService:
         }
         if supersedes_id is not None:
             metadata["supersedes_id"] = supersedes_id
-        result = await self.backend.post(
-            "/remember",
-            {"content": item.content, "category": item.category, "metadata": metadata},
-        )
+        payload = {"content": item.content, "category": item.category, "metadata": metadata}
+        if item.related_to:
+            payload["related_to"] = item.related_to
+        result = await self.backend.post("/remember", payload)
         return {"category": item.category, **result["memory"]}
 
     async def recall(self, request: MemoryRecall) -> dict[str, Any]:
@@ -258,6 +262,8 @@ class MemoryService:
                     "categories": categories,
                     "limit": candidate_limit,
                     "metadata": request.metadata or None,
+                    "filters": request.filters,
+                    "recency_decay": request.recency_decay,
                 },
             )
             for memory in result.get("results", []):
@@ -274,6 +280,8 @@ class MemoryService:
                             "category": category,
                             "limit": candidate_limit,
                             "metadata": request.metadata or None,
+                            "filters": request.filters,
+                            "recency_decay": request.recency_decay,
                         },
                     )
                     for category in categories

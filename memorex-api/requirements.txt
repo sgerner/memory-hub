@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
 psycopg2-binary
@@ -5,3 +6,5 @@ pydantic
 requests
 numpy
 aiohttp
+sentence-transformers==3.0.1
+torch
