@@ -5,6 +5,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY enrich_memory.py .
+COPY *.py .
 
 CMD ["python", "enrich_memory.py"]

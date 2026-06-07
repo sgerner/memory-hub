@@ -531,7 +531,7 @@ async def main():
 
         if not any_left:
             finished_at = utc_now()
-            print("No more items to migrate. Exiting.")
+            print("No more items to migrate. Waiting for new items...")
             save_status(
                 {
                     "service": "embedding-worker",
@@ -543,7 +543,8 @@ async def main():
                     "updated_at": finished_at,
                 }
             )
-            break
+            await asyncio.sleep(60)
+            continue
 
         sleep_seconds = 5 if due_left else 30
         print(f"Completed a cycle. Starting next batch in {sleep_seconds}s...")
