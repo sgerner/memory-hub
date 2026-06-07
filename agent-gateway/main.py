@@ -235,7 +235,7 @@ class MemoryService:
             "retention": item.retention,
             "recorded_at": utc_now(),
             "created_by": item.source_agent,
-            "needs_enrichment": False,
+            "needs_enrichment": True,
         }
         if supersedes_id is not None:
             metadata["supersedes_id"] = supersedes_id

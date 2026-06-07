@@ -1,6 +1,6 @@
 services:
   memory-db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: memory-db
     profiles: ["local-db"]
     restart: unless-stopped
@@ -10,6 +10,22 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/postgres:/var/lib/postgresql/data
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=8GB"
+      - "-c"
+      - "effective_cache_size=24GB"
+      - "-c"
+      - "maintenance_work_mem=1GB"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "max_parallel_workers_per_gather=4"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
     networks:
       - memory-internal
     labels:
@@ -20,6 +36,15 @@ services:
     container_name: ollama
     profiles: ["local-ollama"]
     restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: "24h"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     command: ["serve"]
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/ollama:/root/.ollama
@@ -133,7 +158,7 @@ services:
       GEMINI_CONCURRENCY: ${GEMINI_CONCURRENCY:-4}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
       GEMINI_RETRY_SLEEP_SECONDS: ${GEMINI_RETRY_SLEEP_SECONDS:-2}
-      EMBED_CHUNK_SIZE: ${EMBED_CHUNK_SIZE:-1500}
+      EMBED_CHUNK_SIZE: ${REMOTE_EMBED_CHUNK_SIZE:-8000}
       EMBED_CHUNK_OVERLAP: ${EMBED_CHUNK_OVERLAP:-150}
       EMBED_RETRY_MIN_CHUNK: ${EMBED_RETRY_MIN_CHUNK:-256}
       STATUS_PATH: /app/status/embedding-worker-remote.json
@@ -148,7 +173,7 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
 
   backup-stager:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: memory-backup-stager
     profiles: ["local-backend"]
     restart: unless-stopped
@@ -307,17 +332,89 @@ services:
       AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}
       LLM_FREE_BASE_URL: ${LLM_FREE_BASE_URL:-https://opencode.ai/zen/v1}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
-      ENRICH_CATEGORIES: emails,obsidian,documents,code
-      ENRICH_EMAIL_STRATEGY: large_only
-      ENRICH_EMAIL_MAX_CHARS: 8000
+      LLM_FALLBACK_API_KEY: ""
+      ENRICH_CATEGORIES: emails,obsidian,documents,code,agent
+      ENRICH_EMAIL_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_EMAIL_FALLBACK_PROVIDER: opencode
+      ENRICH_EMAIL_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_EMAIL_FALLBACK_MODEL: deepseek-v4-flash
+      ENRICH_EMAIL_STRATEGY: all
+      ENRICH_EMAIL_MAX_CHARS: 4000
       ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS: "true"
+      ENRICH_KNOWLEDGE_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_KNOWLEDGE_FALLBACK_PROVIDER: opencode
+      ENRICH_KNOWLEDGE_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_KNOWLEDGE_FALLBACK_MODEL: deepseek-v4-flash
       ENRICH_BATCH_SIZE: ${ENRICH_BATCH_SIZE:-100}
       ENRICH_CONCURRENCY: ${ENRICH_CONCURRENCY:-50}
-      GEMINI_CONCURRENCY: ${GEMINI_CONCURRENCY:-8}
+      ENRICH_FALLBACK_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      NVIDIA_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_REQUEST_TIMEOUT_SECONDS: ${NVIDIA_REQUEST_TIMEOUT_SECONDS:-90}
+      NVIDIA_CONCURRENCY: ${NVIDIA_CONCURRENCY:-2}
+      NVIDIA_MAX_TOKENS: ${NVIDIA_MAX_TOKENS:-512}
+      NVIDIA_TEMPERATURE: ${NVIDIA_TEMPERATURE:-0.2}
+      NVIDIA_ENABLE_THINKING: ${NVIDIA_ENABLE_THINKING:-false}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-nim-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-nim-fallback-cooldown.json
+      WORKER_NAME: enricher-worker-nim
+      SECRETS_PATH: /app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  enricher-worker-opencode:
+    build: ./enricher-worker
+    container_name: enricher-worker-opencode
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}
+      LLM_FREE_BASE_URL: ${LLM_FREE_BASE_URL:-https://opencode.ai/zen/v1}
+      LLM_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      LLM_REASONING_EFFORT: low
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_FALLBACK_API_KEY: ""
+      ENRICH_CATEGORIES: obsidian,documents,code
+      ENRICH_EMAIL_STRATEGY: off
+      ENRICH_EMAIL_MAX_CHARS: 4000
+      ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS: "true"
+      ENRICH_EMAIL_PRIMARY_PROVIDER: none
+      ENRICH_EMAIL_FALLBACK_PROVIDER: none
+      ENRICH_EMAIL_MODEL: nemotron-3-super-free
+      ENRICH_EMAIL_FALLBACK_MODEL: nemotron-3-super-free
+      ENRICH_KNOWLEDGE_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_KNOWLEDGE_FALLBACK_PROVIDER: opencode
+      ENRICH_KNOWLEDGE_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_KNOWLEDGE_FALLBACK_MODEL: deepseek-v4-flash
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      NVIDIA_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_REQUEST_TIMEOUT_SECONDS: ${NVIDIA_REQUEST_TIMEOUT_SECONDS:-90}
+      NVIDIA_CONCURRENCY: ${NVIDIA_CONCURRENCY:-2}
+      NVIDIA_MAX_TOKENS: ${NVIDIA_MAX_TOKENS:-512}
+      NVIDIA_TEMPERATURE: ${NVIDIA_TEMPERATURE:-0.2}
+      NVIDIA_ENABLE_THINKING: ${NVIDIA_ENABLE_THINKING:-false}
+      ENRICH_BATCH_SIZE: ${ENRICH_BATCH_SIZE:-100}
+      ENRICH_CONCURRENCY: ${ENRICH_OPENCODE_CONCURRENCY:-1}
+      ENRICH_FALLBACK_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      FALLBACK_COOLDOWN_SECONDS: ${ENRICH_OPENCODE_COOLDOWN_SECONDS:-10}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-opencode-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-opencode-fallback-cooldown.json
+      STATUS_PATH: /app/status/enricher-worker-opencode.json
+      WORKER_NAME: enricher-worker-opencode
       SECRETS_PATH: /app/shared-settings/secrets.json
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
@@ -351,6 +448,8 @@ services:
       REMOTE_OLLAMA_TEMPERATURE: ${REMOTE_OLLAMA_TEMPERATURE:-0.1}
       REMOTE_OLLAMA_CONCURRENCY: ${REMOTE_OLLAMA_CONCURRENCY:-2}
       REMOTE_OLLAMA_THINK: ${REMOTE_OLLAMA_THINK:-false}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-email-remote-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-email-remote-fallback-cooldown.json
       STATUS_PATH: /app/status/enricher-worker-email-remote.json
       SECRETS_PATH: /app/shared-settings/secrets.json
     volumes:

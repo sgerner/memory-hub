@@ -116,6 +116,7 @@ def ensure_vector_indexes():
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
             for category in sorted(ALLOWED_CATEGORIES):
                 table_name = table_for(category)
                 cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
@@ -150,8 +151,8 @@ def ensure_vector_indexes():
                 if "needs_enrichment" in existing_cols:
                     operational_indexes.append(
                         (
-                            f"{table_name}_needs_enrichment_idx",
-                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (id) WHERE lower(coalesce(needs_enrichment::text, 'false')) IN ('true', '1', 'yes')",
+                            f"{table_name}_needs_enrichment_id_idx",
+                            f"CREATE INDEX CONCURRENTLY {{name}} ON {table_name} (LOWER(needs_enrichment), id DESC)",
                         )
                     )
                 if "lifecycle_status" in existing_cols:
@@ -174,9 +175,16 @@ def ensure_vector_indexes():
                 if not cur.fetchone()["to_regclass"]:
                     logger.info("Creating vector index %s on %s", index_name, table_name)
                     cur.execute(
-                        f"CREATE INDEX CONCURRENTLY {index_name} ON {table_name} USING hnsw ((embedding::halfvec({EMBEDDING_DIMS})) halfvec_cosine_ops)"
+                        f"CREATE INDEX CONCURRENTLY {index_name} ON {table_name} USING hnsw ((embedding::halfvec({EMBEDDING_DIMS})) halfvec_cosine_ops) WITH (m=32, ef_construction=128)"
                     )
                     logger.info("Vector index ready: %s", index_name)
+
+                # Prewarm the vector index
+                try:
+                    cur.execute("SELECT pg_prewarm(%s)", (index_name,))
+                    logger.info("Prewarmed vector index: %s", index_name)
+                except Exception as pwe:
+                    logger.warning("Failed to prewarm index %s: %s", index_name, pwe)
 
                 if category not in LEXICAL_INDEX_CATEGORIES:
                     continue
@@ -351,12 +359,14 @@ class SearchQuery(BaseModel):
     category: str
     limit: Optional[int] = 10
     metadata: Optional[Dict[str, Any]] = None
+    ef_search: Optional[int] = None
 
 class MultiSearchQuery(BaseModel):
     query: str
     categories: Optional[List[str]] = None
     limit: Optional[int] = 10
     metadata: Optional[Dict[str, Any]] = None
+    ef_search: Optional[int] = None
 
 class MemoryUpdate(BaseModel):
     id: str
@@ -744,7 +754,8 @@ def search(data: SearchQuery, token: str = Depends(verify_token)):
                 if not emb:
                     raise Exception("Failed to generate embedding")
 
-                cur.execute(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}")
+                ef_search = data.ef_search or HNSW_EF_SEARCH
+                cur.execute(f"SET hnsw.ef_search = {ef_search}")
                 emb_str = f"[{','.join(map(str, emb))}]"
                 results = search_category(
                     cur,
@@ -779,7 +790,8 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
         combined = []
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}")
+                ef_search = data.ef_search or HNSW_EF_SEARCH
+                cur.execute(f"SET hnsw.ef_search = {ef_search}")
                 for category in categories:
                     combined.extend(
                         search_category(
@@ -837,7 +849,7 @@ def queue_status(token: str = Depends(verify_token)):
                             f"""
                             SELECT COUNT(*) AS count
                             FROM {table_name}
-                            WHERE LOWER(COALESCE(needs_enrichment::text, 'false')) IN ('true', '1', 'yes')
+                            WHERE LOWER(needs_enrichment) IN ('true', '1', 'yes')
                             """
                         )
                         enrichment_pending = int(cur.fetchone()["count"])

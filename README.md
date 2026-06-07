@@ -123,6 +123,11 @@ The stack is driven by `.env`. The most important values are:
 | `LLM_MODEL` | Primary enrichment model |
 | `LLM_API_KEY` | Primary enrichment token |
 | `LLM_FALLBACK_API_KEY` | Fallback enrichment token |
+| `NVIDIA_BASE_URL` | NVIDIA NIM base URL for the email enrichment lane |
+| `NVIDIA_MODEL` | NVIDIA NIM enrichment model |
+| `NVIDIA_REQUESTS_PER_MINUTE` | Hard rate cap for the NVIDIA email lane |
+| `NVIDIA_ENABLE_THINKING` | Whether to allow NIM thinking; defaults to `false` |
+| `ENRICH_FALLBACK_REQUESTS_PER_MINUTE` | Rate cap for the OpenCode enrichment lane |
 | `BACKUP_INTERVAL_SECONDS` | Backup cadence, daily by default |
 | `BACKUP_RETENTION_DAYS` | How many days of backups to keep, 7 by default |
 

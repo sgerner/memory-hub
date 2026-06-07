@@ -21,21 +21,23 @@ POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3-embedding:4b")
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
-GEMINI_OUTPUT_DIMENSIONALITY = int(os.getenv("GEMINI_OUTPUT_DIMENSIONALITY", os.getenv("EMBEDDING_DIMS", "2560")))
+GEMINI_API_KEY = ""
+GEMINI_EMBED_MODEL = ""
+GEMINI_OUTPUT_DIMENSIONALITY = 2560
+VERCEL_API_KEY = ""
+VERCEL_MODEL = ""
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/embedding-worker.json")
 PROCESSING_STALE_AFTER_SECONDS = int(os.getenv("EMBEDDING_PROCESSING_TIMEOUT_SECONDS", "900"))
 
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
 CONCURRENCY = int(os.getenv("MIGRATION_CONCURRENCY", "1"))
-GEMINI_CONCURRENCY = int(os.getenv("GEMINI_CONCURRENCY", str(max(1, CONCURRENCY))))
+GEMINI_CONCURRENCY = 1
 STATUS_UPDATE_EVERY = int(os.getenv("MIGRATION_STATUS_UPDATE_EVERY", "1"))
 EMBED_CHUNK_SIZE = int(os.getenv("EMBED_CHUNK_SIZE", "1500"))
 EMBED_CHUNK_OVERLAP = int(os.getenv("EMBED_CHUNK_OVERLAP", "150"))
 EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
-GEMINI_RETRY_SLEEP_SECONDS = float(os.getenv("GEMINI_RETRY_SLEEP_SECONDS", "2"))
+GEMINI_RETRY_SLEEP_SECONDS = 0.0
 DB_RETRY_INITIAL_DELAY_SECONDS = float(os.getenv("DB_RETRY_INITIAL_DELAY_SECONDS", "2"))
 DB_RETRY_MAX_DELAY_SECONDS = float(os.getenv("DB_RETRY_MAX_DELAY_SECONDS", "30"))
 INTERNAL_CONTROL_COLUMNS = {
@@ -48,6 +50,9 @@ INTERNAL_CONTROL_COLUMNS = {
     "embedding_attempts": "INTEGER DEFAULT 0",
     "embedding_error": "TEXT",
 }
+
+
+
 
 
 def utc_now():
@@ -166,68 +171,34 @@ async def get_embedding(session, text):
 
         vectors = []
         for chunk in chunks:
-            if EMBEDDING_PROVIDER == "gemini":
-                if not GEMINI_API_KEY:
-                    print("GEMINI_API_KEY is missing while EMBEDDING_PROVIDER=gemini")
-                    return None
-                async with session.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_EMBED_MODEL}:embedContent",
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-goog-api-key": GEMINI_API_KEY,
-                    },
-                    json={
-                        "model": f"models/{GEMINI_EMBED_MODEL}",
-                        "content": {"parts": [{"text": chunk}]},
-                        "output_dimensionality": GEMINI_OUTPUT_DIMENSIONALITY,
-                    },
-                    timeout=REQUEST_TIMEOUT_SECONDS,
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        vector = []
-                        if isinstance(data.get("embedding"), dict):
-                            vector = data.get("embedding", {}).get("values", []) or []
-                        if not vector and isinstance(data.get("embeddings"), list) and data["embeddings"]:
-                            vector = (data["embeddings"][0] or {}).get("values", []) or []
-                        if vector:
-                            vectors.append(vector)
-                        continue
-                    body = await response.text()
-                    if response.status == 429:
-                        print(f"Gemini rate limited: {body}")
-                        return None
-                    print(f"Gemini error {response.status}: {body}")
-                    return None
-            else:
-                async with session.post(
-                    f"{OLLAMA_HOST}/api/embeddings",
-                    json={"model": DEFAULT_MODEL, "prompt": chunk},
-                    timeout=REQUEST_TIMEOUT_SECONDS,
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        vector = data.get("embedding", [])
-                        if vector:
-                            vectors.append(vector)
-                        continue
+            async with session.post(
+                f"{OLLAMA_HOST}/api/embeddings",
+                json={"model": DEFAULT_MODEL, "prompt": chunk},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    vector = data.get("embedding", [])
+                    if vector:
+                        vectors.append(vector)
+                    continue
 
-                    body = await response.text()
-                    if "context length" in body.lower() and len(chunk) > EMBED_RETRY_MIN_CHUNK:
-                        smaller_size = max(EMBED_RETRY_MIN_CHUNK, len(chunk) // 2)
-                        nested_vectors = []
-                        for sub_chunk in split_embedding_text(
-                            chunk,
-                            smaller_size,
-                            max(EMBED_CHUNK_OVERLAP // 2, 50),
-                        ):
-                            sub_vector = await get_embedding(session, sub_chunk)
-                            if sub_vector:
-                                nested_vectors.append(sub_vector)
-                        return average_embeddings(nested_vectors)
+                body = await response.text()
+                if "context length" in body.lower() and len(chunk) > EMBED_RETRY_MIN_CHUNK:
+                    smaller_size = max(EMBED_RETRY_MIN_CHUNK, len(chunk) // 2)
+                    nested_vectors = []
+                    for sub_chunk in split_embedding_text(
+                        chunk,
+                        smaller_size,
+                        max(EMBED_CHUNK_OVERLAP // 2, 50),
+                    ):
+                        sub_vector = await get_embedding(session, sub_chunk)
+                        if sub_vector:
+                            nested_vectors.append(sub_vector)
+                    return average_embeddings(nested_vectors)
 
-                    print(f"Ollama error {response.status}: {body}")
-                    return None
+                print(f"Ollama error {response.status}: {body}")
+                return None
 
         return average_embeddings(vectors)
     except Exception as exc:
@@ -300,18 +271,29 @@ async def migrate_table(category):
                 return 0
 
         ensure_tracking_columns(conn, table_name)
+        enrichment_filter = ""
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name=%s AND column_name='needs_enrichment'",
+                (table_name,)
+            )
+            if cur.fetchone():
+                enrichment_filter = "AND COALESCE(LOWER(needs_enrichment), 'false') NOT IN ('true', '1', 'yes')"
 
         with conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT COUNT(*) as count
                 FROM {table_name}
-                WHERE embedding IS NULL
-                   OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
-                   OR (
-                       embedding_status = 'processing'
-                       AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - {PROCESSING_STALE_AFTER_SECONDS}
-                   )
+                WHERE (
+                    embedding IS NULL
+                    OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry')
+                    OR (
+                        embedding_status = 'processing'
+                        AND CAST(COALESCE(NULLIF(embedding_started_at, ''), '0') AS DOUBLE PRECISION) < EXTRACT(EPOCH FROM NOW()) - {PROCESSING_STALE_AFTER_SECONDS}
+                    )
+                )
+                {enrichment_filter}
                 """
             )
             total_todo = cur.fetchone()['count']
@@ -347,7 +329,8 @@ async def migrate_table(category):
                         )
                     )
                       AND CAST(COALESCE(NULLIF(embedding_available_at, ''), '0') AS DOUBLE PRECISION) <= EXTRACT(EPOCH FROM NOW())
-                    ORDER BY id ASC
+                      {enrichment_filter}
+                    ORDER BY id DESC
                     FOR UPDATE SKIP LOCKED
                     LIMIT %s
                 )
@@ -369,7 +352,7 @@ async def migrate_table(category):
             conn.commit()
 
         if not rows:
-            provider_concurrency = GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY
+            provider_concurrency = CONCURRENCY
             save_status(
                 {
                     "service": "embedding-worker",
@@ -400,7 +383,7 @@ async def migrate_table(category):
                 "updated_at": utc_now(),
                 "details": {
                     "batch_size": len(rows),
-                    "concurrency": max(1, GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY),
+                    "concurrency": max(1, CONCURRENCY),
                     "completed_in_batch": 0,
                     "successful_in_batch": 0,
                 },
@@ -408,7 +391,7 @@ async def migrate_table(category):
         )
 
         async with aiohttp.ClientSession() as session:
-            provider_concurrency = GEMINI_CONCURRENCY if EMBEDDING_PROVIDER == "gemini" else CONCURRENCY
+            provider_concurrency = CONCURRENCY
             print(f"Generating embeddings for batch of {len(rows)} with concurrency {max(1, provider_concurrency)}...")
             semaphore = asyncio.Semaphore(max(1, provider_concurrency))
             status_lock = asyncio.Lock()
@@ -487,7 +470,11 @@ async def migrate_table(category):
 
 async def main():
     while True:
-        categories = ["emails", "documents", "obsidian", "code"]
+        categories = [
+            item.strip()
+            for item in os.getenv("MEMORY_CATEGORIES", "agent,emails,documents,obsidian,code").split(",")
+            if item.strip()
+        ]
         total_processed = 0
 
         save_status(
@@ -527,8 +514,11 @@ async def main():
                                    )
                             ) AS due_count
                         FROM {table_name}
-                        WHERE embedding IS NULL
-                           OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry', 'processing')
+                        WHERE (
+                            embedding IS NULL
+                            OR COALESCE(embedding_status, 'pending') IN ('pending', 'retry', 'processing')
+                        )
+                        AND COALESCE(LOWER(needs_enrichment), 'false') NOT IN ('true', '1', 'yes')
                         """
                     )
                     counts = cur.fetchone()
