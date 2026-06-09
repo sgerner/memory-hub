@@ -421,7 +421,7 @@ mcp = FastMCP(
 async def memory_recall(
     query: str,
     categories: list[str] | None = None,
-    limit: int = 8,
+    limit: int = 3,
     include_inactive: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
