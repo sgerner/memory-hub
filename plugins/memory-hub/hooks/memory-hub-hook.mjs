@@ -6,7 +6,7 @@ import path from 'node:path';
 const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:3112';
 const DEFAULT_AGENT = 'codex';
 const DEFAULT_CATEGORIES = ['agent', 'emails', 'obsidian', 'documents', 'code'];
-const MAX_RECALL_RESULTS = 5;
+const MAX_RECALL_RESULTS = 3;
 
 function inputFromStdin() {
   const raw = fs.readFileSync(0, 'utf8').trim();

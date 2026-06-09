@@ -141,7 +141,7 @@ server.registerTool(
         body: {
           query,
           categories: parseCategories(categories).length ? categories : DEFAULT_CATEGORIES,
-          limit: limit ?? 8,
+          limit: limit ?? 3,
           include_inactive: includeInactive ?? false,
           metadata: parseJson(metadata, {}),
         },
