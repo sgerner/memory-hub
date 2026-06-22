@@ -6,9 +6,10 @@ import traceback
 import re
 import math
 import threading
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import psycopg2
@@ -16,6 +17,10 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
 import requests
+try:
+    import redis
+except ImportError:
+    redis = None
 
 # Configuration
 POSTGRES_DB = os.getenv("POSTGRES_DB", "agentmemory")
@@ -36,6 +41,12 @@ SEARCH_LEXICAL_TIMEOUT_MS = int(os.getenv("SEARCH_LEXICAL_TIMEOUT_MS", "800"))
 SEARCH_LEXICAL_MAX_CHARS = int(os.getenv("SEARCH_LEXICAL_MAX_CHARS", "50000"))
 EMBED_CACHE_TTL_SECONDS = int(os.getenv("EMBED_CACHE_TTL_SECONDS", "3600"))
 EMBED_CACHE_MAX_ITEMS = int(os.getenv("EMBED_CACHE_MAX_ITEMS", "512"))
+SEARCH_TOTAL_BUDGET_MS = int(os.getenv("SEARCH_TOTAL_BUDGET_MS", "1400"))
+SEARCH_RESULT_CACHE_TTL_SECONDS = int(os.getenv("SEARCH_RESULT_CACHE_TTL_SECONDS", "30"))
+SEARCH_RESULT_CACHE_MAX_ITEMS = int(os.getenv("SEARCH_RESULT_CACHE_MAX_ITEMS", "256"))
+SEARCH_DOCUMENT_MAX_CHARS = int(os.getenv("SEARCH_DOCUMENT_MAX_CHARS", "12000"))
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() in {"1", "true", "yes"}
 LEXICAL_INDEX_CATEGORIES = {
     item.strip()
     for item in os.getenv("LEXICAL_INDEX_CATEGORIES", "agent,emails,obsidian,documents").split(",")
@@ -107,12 +118,20 @@ EMBED_RETRY_MIN_CHUNK = int(os.getenv("EMBED_RETRY_MIN_CHUNK", "256"))
 OLLAMA_EMBED_TIMEOUT = int(os.getenv("OLLAMA_EMBED_TIMEOUT", "120"))
 embedding_cache_lock = threading.Lock()
 embedding_cache: dict[str, tuple[float, List[float]]] = {}
+search_cache_lock = threading.Lock()
+search_cache: dict[str, tuple[float, Dict[str, Any]]] = {}
+schema_cache_lock = threading.Lock()
+schema_cache: dict[str, tuple[set[str], bool]] = {}
+search_generation = 0
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True) if redis and REDIS_URL else None
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 try:
+    if not RERANKER_ENABLED:
+        raise RuntimeError("Cross-encoder disabled")
     from sentence_transformers import CrossEncoder
     reranker_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
 except Exception as e:
@@ -476,13 +495,89 @@ def table_for(category: str) -> str:
     return f"memory_{category}"
 
 def existing_columns(cur, table_name: str) -> set[str]:
+    with schema_cache_lock:
+        cached = schema_cache.get(table_name)
+    if cached:
+        return cached[0]
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s", (table_name,))
-    return {row["column_name"] for row in cur.fetchall()}
+    columns = {row["column_name"] for row in cur.fetchall()}
+    with schema_cache_lock:
+        schema_cache[table_name] = (columns, False)
+    return columns
+
+def table_search_metadata(cur, table_name: str) -> tuple[set[str], bool]:
+    with schema_cache_lock:
+        cached = schema_cache.get(table_name)
+    if cached and cached[1]:
+        return cached
+    cur.execute("SELECT to_regclass(%s) AS table_ref", (table_name,))
+    if not cur.fetchone()["table_ref"]:
+        return set(), False
+    columns = existing_columns(cur, table_name)
+    cur.execute(
+        """SELECT i.indisvalid AND i.indisready AS ready
+           FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           WHERE c.relname = %s""",
+        (f"{table_name}_document_50k_simple_tsv_idx",),
+    )
+    row = cur.fetchone()
+    value = (columns, bool(row and row["ready"]))
+    with schema_cache_lock:
+        schema_cache[table_name] = value
+    return value
 
 def metadata_projection(alias: str = "t") -> str:
     excluded = ["id", "document", "embedding", *INTERNAL_METADATA_KEYS]
     quoted = ", ".join(f"'{item}'" for item in excluded)
     return f"to_jsonb({alias}) - ARRAY[{quoted}] AS metadata"
+
+def metadata_projection_for_columns(columns: set[str], alias: str = "t") -> str:
+    excluded = {"id", "document", "embedding", *INTERNAL_METADATA_KEYS}
+    included = sorted(column for column in columns if column not in excluded)
+    if not included:
+        return "'{}'::jsonb AS metadata"
+    pairs = ", ".join(f"'{column}', {alias}.{column}" for column in included)
+    return f"jsonb_strip_nulls(jsonb_build_object({pairs})) AS metadata"
+
+def invalidate_search_cache():
+    global search_generation
+    with search_cache_lock:
+        search_generation += 1
+        search_cache.clear()
+
+def search_cache_key(data: MultiSearchQuery, categories: list[str], limit: int) -> str:
+    payload = json.dumps(
+        [search_generation, data.model_dump(mode="json") if hasattr(data, "model_dump") else data.dict(), categories, limit],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "memorex:search:" + hashlib.sha256(payload.encode()).hexdigest()
+
+def get_cached_search(key: str) -> Optional[Dict[str, Any]]:
+    now = time.time()
+    with search_cache_lock:
+        cached = search_cache.get(key)
+        if cached and now - cached[0] <= SEARCH_RESULT_CACHE_TTL_SECONDS:
+            return cached[1]
+    if redis_client:
+        try:
+            value = redis_client.get(key)
+            return json.loads(value) if value else None
+        except Exception as exc:
+            logger.warning("Redis cache read failed: %s", exc)
+    return None
+
+def put_cached_search(key: str, value: Dict[str, Any]):
+    with search_cache_lock:
+        if len(search_cache) >= SEARCH_RESULT_CACHE_MAX_ITEMS:
+            oldest = min(search_cache, key=lambda item: search_cache[item][0])
+            search_cache.pop(oldest, None)
+        search_cache[key] = (time.time(), value)
+    if redis_client:
+        try:
+            redis_client.setex(key, SEARCH_RESULT_CACHE_TTL_SECONDS, json.dumps(value))
+        except Exception as exc:
+            logger.warning("Redis cache write failed: %s", exc)
 
 def safe_metadata_key(key: str) -> Optional[str]:
     safe_key = "".join([char for char in key if char.isalnum() or char == "_"]).lower()
@@ -558,16 +653,16 @@ def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int, re
     max_rank = max((float(row.get("lexical_rank") or 0) for row in rows), default=0.0)
     by_id: dict[str, Dict[str, Any]] = {}
     for row in rows:
-        memory_id = str(row["id"])
+        row_category = row.get("category") or category
+        memory_id = f"{row_category}:{row['id']}"
         current = by_id.get(memory_id)
         if current is None:
             current = {
                 "id": row["id"],
-                "document": row["document"],
-                "metadata": row["metadata"],
                 "distance": row.get("distance"),
                 "lexical_rank": float(row.get("lexical_rank") or 0),
-                "category": category,
+                "category": row_category,
+                "created_at": row.get("created_at"),
             }
             by_id[memory_id] = current
             continue
@@ -584,7 +679,7 @@ def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int, re
             SEARCH_TEXT_WEIGHT * text_score(row.get("lexical_rank"), max_rank)
         )
         if recency_decay and recency_decay > 0:
-            created_at_str = row.get("metadata", {}).get("created_at") or row.get("metadata", {}).get("recorded_at")
+            created_at_str = row.get("created_at")
             if created_at_str:
                 try:
                     if "T" in str(created_at_str):
@@ -606,20 +701,18 @@ def combine_candidates(category: str, rows: list[Dict[str, Any]], limit: int, re
 
 def search_category(cur, category: str, query_text: str, emb_str: str, limit: int, metadata: Optional[Dict[str, Any]], filters: Optional[List[FilterCriteria]] = None, recency_decay: Optional[float] = None) -> list[Dict[str, Any]]:
     table_name = table_for(category)
-    cur.execute("SELECT to_regclass(%s)", (table_name,))
-    if not cur.fetchone()["to_regclass"]:
+    existing_cols, lexical_ready = table_search_metadata(cur, table_name)
+    if not existing_cols:
         return []
 
-    existing_cols = existing_columns(cur, table_name)
     where_sql, where_vals = build_metadata_where(metadata, filters, existing_cols)
     vector_limit = max(limit * 3, 20)
     lexical_limit = max(limit * SEARCH_LEXICAL_MULTIPLIER, 20)
 
     vector_query = f"""
-        SELECT id, document,
+        SELECT id, created_at,
                embedding::halfvec({EMBEDDING_DIMS}) <=> CAST(%s AS halfvec({EMBEDDING_DIMS})) AS distance,
-               0.0::double precision AS lexical_rank,
-               {metadata_projection('t')}
+               0.0::double precision AS lexical_rank
         FROM {table_name} t
         {where_sql}
         ORDER BY embedding::halfvec({EMBEDDING_DIMS}) <=> CAST(%s AS halfvec({EMBEDDING_DIMS})) ASC
@@ -628,18 +721,7 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
     cur.execute(vector_query, [emb_str] + where_vals + [emb_str, vector_limit])
     rows = list(cur.fetchall())
 
-    lexical_index_name = f"{table_name}_document_50k_simple_tsv_idx"
-    cur.execute(
-        """
-        SELECT i.indisvalid AND i.indisready AS ready
-        FROM pg_index i
-        JOIN pg_class c ON c.oid = i.indexrelid
-        WHERE c.relname = %s
-        """,
-        (lexical_index_name,),
-    )
-    index_status = cur.fetchone()
-    if not index_status or not index_status["ready"]:
+    if not lexical_ready:
         return combine_candidates(category, rows, limit, recency_decay)
 
     lexical_tsquery = build_lexical_tsquery(query_text)
@@ -647,10 +729,9 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         return combine_candidates(category, rows, limit, recency_decay)
 
     lexical_query = f"""
-        SELECT id, document,
+        SELECT id, created_at,
                NULL::double precision AS distance,
-               ts_rank_cd(to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS})), to_tsquery('simple', %s)) AS lexical_rank,
-               {metadata_projection('t')}
+               ts_rank_cd(to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS})), to_tsquery('simple', %s)) AS lexical_rank
         FROM {table_name} t
         {where_sql}
         {"AND" if where_sql else "WHERE"} to_tsquery('simple', %s) @@ to_tsvector('simple', left(coalesce(document, ''), {SEARCH_LEXICAL_MAX_CHARS}))
@@ -670,10 +751,37 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         logger.warning("Lexical search timed out for category=%s query=%r", category, query_text[:120])
     return combine_candidates(category, rows, limit, recency_decay)
 
+def hydrate_candidates(candidates: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    by_category: dict[str, list[Any]] = {}
+    for candidate in candidates:
+        by_category.setdefault(candidate["category"], []).append(candidate["id"])
+    hydrated: dict[tuple[str, str], Dict[str, Any]] = {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for category, ids in by_category.items():
+                table_name = table_for(category)
+                columns, _ = table_search_metadata(cur, table_name)
+                cur.execute(
+                    f"SELECT id, left(document, %s) AS document, {metadata_projection_for_columns(columns, 't')} FROM {table_name} t WHERE id = ANY(%s)",
+                    (SEARCH_DOCUMENT_MAX_CHARS, ids),
+                )
+                for row in cur.fetchall():
+                    hydrated[(category, str(row["id"]))] = row
+    results = []
+    for candidate in candidates:
+        row = hydrated.get((candidate["category"], str(candidate["id"])))
+        if row:
+            candidate.pop("created_at", None)
+            candidate["document"] = row["document"]
+            candidate["metadata"] = row["metadata"]
+            results.append(candidate)
+    return results
+
 def search_category_parallel(category: str, query_text: str, emb_str: str, limit: int, metadata: Optional[Dict[str, Any]], filters: Optional[List[FilterCriteria]] = None, recency_decay: Optional[float] = None, ef_search: Optional[int] = None) -> list[Dict[str, Any]]:
     started_at = time.time()
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute(f"SET statement_timeout = {SEARCH_TOTAL_BUDGET_MS}")
             if ef_search is not None:
                 cur.execute(f"SET hnsw.ef_search = {ef_search}")
             results = search_category(cur, category, query_text, emb_str, limit, metadata, filters, recency_decay)
@@ -721,6 +829,8 @@ def _ensure_table(conn, category: str, metadata: Dict[str, Any]):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {safe_key} TEXT")
                 existing_cols.add(safe_key)
     conn.commit()
+    with schema_cache_lock:
+        schema_cache.pop(table_name, None)
 
 def sanitize(val):
     if val is None: return None
@@ -871,7 +981,7 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
                 )
                 mem_id = cur.fetchone()['id']
             conn.commit()
-            
+        invalidate_search_cache()
         return {"success": True, "memory": {"id": mem_id, "document": data.content, "metadata": metadata}}
     except Exception as e:
         logger.error(f"Error in /remember: {e}")
@@ -901,6 +1011,7 @@ def search(data: SearchQuery, token: str = Depends(verify_token)):
                     data.filters,
                     data.recency_decay,
                 )
+                results = hydrate_candidates(results)
                 results = rerank_candidates(data.query, results, max(1, min(int(data.limit or 10), 100)))
                     
         return {"success": True, "results": results}
@@ -920,6 +1031,14 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
         per_category_limit = max(fetch_limit * 3, 20)
         ef_search = data.ef_search or HNSW_EF_SEARCH
         started_at = time.time()
+        result_limit = max(1, min(int(data.limit or 10), 100))
+        cache_key = search_cache_key(data, categories, result_limit)
+        cached = get_cached_search(cache_key)
+        if cached:
+            response = dict(cached)
+            response["cache_hit"] = True
+            response["latency_ms"] = round((time.time() - started_at) * 1000, 2)
+            return response
         emb = get_cached_embedding(data.query)
         if not emb:
             raise Exception("Failed to generate embedding")
@@ -928,8 +1047,8 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
         emb_str = f"[{sep.join(map(str, emb))}]"
         combined: list[Dict[str, Any]] = []
         worker_count = min(len(categories), max(2, os.cpu_count() or 4))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        futures = {
                 executor.submit(
                     search_category_parallel,
                     category,
@@ -942,22 +1061,33 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
                     ef_search,
                 ): category
                 for category in categories
-            }
-            for future in as_completed(futures):
+        }
+        try:
+            for future in as_completed(futures, timeout=SEARCH_TOTAL_BUDGET_MS / 1000):
                 category = futures[future]
                 try:
                     combined.extend(future.result())
                 except Exception as exc:
                     logger.warning("Search failed for category=%s query=%r: %s", category, data.query[:120], exc)
+        except FuturesTimeoutError:
+            logger.warning("Search budget exhausted after %d ms for query=%r", SEARCH_TOTAL_BUDGET_MS, data.query[:120])
+        finally:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
 
         combined = combine_candidates("multi", combined, fetch_limit, data.recency_decay)
-        final_results = rerank_candidates(data.query, combined, max(1, min(int(data.limit or 10), 100)))
+        combined = hydrate_candidates(combined)
+        final_results = rerank_candidates(data.query, combined, result_limit)
 
-        return {
+        response = {
             "success": True,
             "results": final_results,
             "latency_ms": round((time.time() - started_at) * 1000, 2),
+            "cache_hit": False,
         }
+        put_cached_search(cache_key, response)
+        return response
     except Exception as e:
         logger.error(f"Error in /search-multi: {e}")
         logger.error(traceback.format_exc())
@@ -1118,7 +1248,7 @@ def update(data: MemoryUpdate, token: str = Depends(verify_token)):
             with conn.cursor() as cur:
                 cur.execute(f"UPDATE {table_name} SET {set_sql} WHERE id = %s", set_vals)
             conn.commit()
-            
+        invalidate_search_cache()
         return {"success": True, "embedding_queued": needs_embedding_refresh}
     except Exception as e:
         logger.error(f"Error in /update: {e}")
@@ -1133,6 +1263,7 @@ def delete_item(data: MemoryDelete, token: str = Depends(verify_token)):
             with conn.cursor() as cur:
                 cur.execute(f"DELETE FROM {table_name} WHERE id = %s", [data.id])
             conn.commit()
+        invalidate_search_cache()
         return {"success": True}
     except Exception as e:
         logger.error(f"Error in /delete: {e}")
@@ -1198,6 +1329,7 @@ def delete_email(data: EmailDelete, token: str = Depends(verify_token)):
                     cur.execute(f"DELETE FROM {table_name} WHERE {where_sql} RETURNING id", values)
                     deleted_ids.extend(row["id"] for row in cur.fetchall())
             conn.commit()
+        invalidate_search_cache()
         return {"success": True, "deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
     except HTTPException:
         raise

@@ -1,4 +1,18 @@
 services:
+  search-cache:
+    image: redis:7-alpine
+    container_name: memory-search-cache
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu", "--save", ""]
+    networks:
+      - memory-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   memory-db:
     image: pgvector/pgvector:pg16
     container_name: memory-db
@@ -26,6 +40,10 @@ services:
       - "random_page_cost=1.1"
       - "-c"
       - "effective_io_concurrency=200"
+      - "-c"
+      - "autovacuum_analyze_scale_factor=0.01"
+      - "-c"
+      - "autovacuum_vacuum_scale_factor=0.02"
     networks:
       - memory-internal
     labels:
@@ -79,12 +97,21 @@ services:
       SEARCH_LEXICAL_MAX_CHARS: ${SEARCH_LEXICAL_MAX_CHARS:-50000}
       EMBED_CACHE_TTL_SECONDS: ${EMBED_CACHE_TTL_SECONDS:-3600}
       EMBED_CACHE_MAX_ITEMS: ${EMBED_CACHE_MAX_ITEMS:-512}
+      SEARCH_TOTAL_BUDGET_MS: ${SEARCH_TOTAL_BUDGET_MS:-1400}
+      SEARCH_RESULT_CACHE_TTL_SECONDS: ${SEARCH_RESULT_CACHE_TTL_SECONDS:-30}
+      SEARCH_RESULT_CACHE_MAX_ITEMS: ${SEARCH_RESULT_CACHE_MAX_ITEMS:-256}
+      SEARCH_DOCUMENT_MAX_CHARS: ${SEARCH_DOCUMENT_MAX_CHARS:-12000}
+      REDIS_URL: ${REDIS_URL:-redis://search-cache:6379/0}
       MEMORY_CATEGORIES: ${MEMORY_CATEGORIES:-agent,emails,obsidian,documents,code}
     ports:
       - "${AGENTMEMORY_PORT:-3111}:3111"
     depends_on:
-      - memory-db
-      - ollama
+      memory-db:
+        condition: service_started
+      ollama:
+        condition: service_started
+      search-cache:
+        condition: service_healthy
     networks:
       - memory-internal
       - proxy

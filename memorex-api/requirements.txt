@@ -4,6 +4,7 @@ uvicorn
 psycopg2-binary
 pydantic
 requests
+redis
 numpy
 aiohttp
 sentence-transformers==3.0.1
