@@ -52,12 +52,15 @@ Deployment rules:
 
 Restore rules:
 - Restore the runtime data tree before starting workers.
+- Restore `/etc/docker/daemon.json` if you use a custom Docker daemon config.
+- Restore `/etc/fuse.conf` if you use FUSE-backed remote mounts such as rclone.
 - Restore the PostgreSQL dump into the backend database if you are using the local backend.
 - Restore `settings/`, `status/`, and `email-worker/accounts.json` if they exist.
 - Restore `secrets.json` and any other worker-specific settings files before starting the workers.
 - Restore any local document or Obsidian source trees before starting the workers.
+- If `MEMORY_INGEST_DIR` is backed by remote mounts such as OneDrive or rclone, restore their configs and start those mount stacks before the Memory Hub workers.
 - If external sources are remote, reconnect credentials and let the workers resync.
-- If the backup repository is Kopia or another host-level backup target, make sure it includes MEMORY_DATA_DIR, MEMORY_INGEST_DIR, and MEMORY_OBSIDIAN_DIR.
+- If the backup repository is Kopia or another host-level backup target, make sure it includes MEMORY_DATA_DIR, /etc/docker/daemon.json, /etc/fuse.conf if relevant, any local source subtrees you want to preserve, and the stack restore helper script. The remote source-mount configs live under MEMORY_DATA_DIR. Do not include tertiary source mirrors like Obsidian here unless you explicitly want them on this host backup too.
 
 Validation:
 - Run `docker compose config` or `make up` and make sure the stack resolves cleanly.

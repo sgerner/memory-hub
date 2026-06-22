@@ -1,6 +1,20 @@
 services:
+  search-cache:
+    image: redis:7-alpine
+    container_name: memory-search-cache
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu", "--save", ""]
+    networks:
+      - memory-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   memory-db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: memory-db
     profiles: ["local-db"]
     restart: unless-stopped
@@ -10,16 +24,45 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/postgres:/var/lib/postgresql/data
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=8GB"
+      - "-c"
+      - "effective_cache_size=24GB"
+      - "-c"
+      - "maintenance_work_mem=1GB"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "max_parallel_workers_per_gather=4"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "autovacuum_analyze_scale_factor=0.01"
+      - "-c"
+      - "autovacuum_vacuum_scale_factor=0.02"
     networks:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     profiles: ["local-ollama"]
     restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: "24h"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     command: ["serve"]
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/ollama:/root/.ollama
@@ -27,7 +70,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   agentmemory:
     build: ./memorex-api
     container_name: agentmemory
@@ -47,24 +90,34 @@ services:
       GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-gemini-embedding-2}
       GEMINI_OUTPUT_DIMENSIONALITY: ${GEMINI_OUTPUT_DIMENSIONALITY:-2560}
       EMBEDDING_DIMS: ${EMBEDDING_DIMS:-2560}
+      EMBEDDING_PROCESSING_TIMEOUT_SECONDS: ${EMBEDDING_PROCESSING_TIMEOUT_SECONDS:-900}
       VECTOR_INDEX_EF_SEARCH: ${VECTOR_INDEX_EF_SEARCH:-100}
       LEXICAL_INDEX_CATEGORIES: ${LEXICAL_INDEX_CATEGORIES:-agent,emails,obsidian,documents}
-      SEARCH_LEXICAL_TIMEOUT_MS: ${SEARCH_LEXICAL_TIMEOUT_MS:-800}
+      SEARCH_LEXICAL_TIMEOUT_MS: ${SEARCH_LEXICAL_TIMEOUT_MS:-400}
       SEARCH_LEXICAL_MAX_CHARS: ${SEARCH_LEXICAL_MAX_CHARS:-50000}
       EMBED_CACHE_TTL_SECONDS: ${EMBED_CACHE_TTL_SECONDS:-3600}
       EMBED_CACHE_MAX_ITEMS: ${EMBED_CACHE_MAX_ITEMS:-512}
+      SEARCH_TOTAL_BUDGET_MS: ${SEARCH_TOTAL_BUDGET_MS:-1100}
+      SEARCH_RESULT_CACHE_TTL_SECONDS: ${SEARCH_RESULT_CACHE_TTL_SECONDS:-30}
+      SEARCH_RESULT_CACHE_MAX_ITEMS: ${SEARCH_RESULT_CACHE_MAX_ITEMS:-256}
+      SEARCH_DOCUMENT_MAX_CHARS: ${SEARCH_DOCUMENT_MAX_CHARS:-12000}
+      REDIS_URL: ${REDIS_URL:-redis://search-cache:6379/0}
       MEMORY_CATEGORIES: ${MEMORY_CATEGORIES:-agent,emails,obsidian,documents,code}
     ports:
       - "${AGENTMEMORY_PORT:-3111}:3111"
     depends_on:
-      - memory-db
-      - ollama
+      memory-db:
+        condition: service_started
+      ollama:
+        condition: service_started
+      search-cache:
+        condition: service_healthy
     networks:
       - memory-internal
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   embedding-worker:
     build: ./memorex-api
     container_name: embedding-worker
@@ -90,6 +143,7 @@ services:
       GEMINI_CONCURRENCY: ${GEMINI_CONCURRENCY:-4}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
       GEMINI_RETRY_SLEEP_SECONDS: ${GEMINI_RETRY_SLEEP_SECONDS:-2}
+      EMBEDDING_PROCESSING_TIMEOUT_SECONDS: ${EMBEDDING_PROCESSING_TIMEOUT_SECONDS:-900}
       EMBED_CHUNK_SIZE: ${EMBED_CHUNK_SIZE:-1500}
       EMBED_CHUNK_OVERLAP: ${EMBED_CHUNK_OVERLAP:-150}
       EMBED_RETRY_MIN_CHUNK: ${EMBED_RETRY_MIN_CHUNK:-256}
@@ -97,14 +151,56 @@ services:
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
     depends_on:
-      - agentmemory
+      - memory-db
+      - ollama
     networks:
       - memory-internal
+      - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
+  embedding-worker-remote:
+    build: ./memorex-api
+    container_name: embedding-worker-remote
+    profiles: ["remote-embedding"]
+    restart: unless-stopped
+    command: python migrate_vectors.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      POSTGRES_DB: ${POSTGRES_DB:-agentmemory}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: ${POSTGRES_HOST:-memory-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      OLLAMA_HOST: ${REMOTE_OLLAMA_HOST:-http://192.168.29.159:11434}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen3-embedding:4b}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-gemini-embedding-2}
+      GEMINI_OUTPUT_DIMENSIONALITY: ${GEMINI_OUTPUT_DIMENSIONALITY:-2560}
+      EMBEDDING_DIMS: ${EMBEDDING_DIMS:-2560}
+      EMBEDDING_PROCESSING_TIMEOUT_SECONDS: ${EMBEDDING_PROCESSING_TIMEOUT_SECONDS:-900}
+      MIGRATION_BATCH_SIZE: ${REMOTE_MIGRATION_BATCH_SIZE:-200}
+      MIGRATION_CONCURRENCY: ${REMOTE_MIGRATION_CONCURRENCY:-1}
+      GEMINI_CONCURRENCY: ${GEMINI_CONCURRENCY:-4}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
+      GEMINI_RETRY_SLEEP_SECONDS: ${GEMINI_RETRY_SLEEP_SECONDS:-2}
+      EMBED_CHUNK_SIZE: ${REMOTE_EMBED_CHUNK_SIZE:-8000}
+      EMBED_CHUNK_OVERLAP: ${EMBED_CHUNK_OVERLAP:-150}
+      EMBED_RETRY_MIN_CHUNK: ${EMBED_RETRY_MIN_CHUNK:-256}
+      STATUS_PATH: /app/status/embedding-worker-remote.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    depends_on:
+      - memory-db
+    networks:
+      - memory-internal
+      - proxy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "diun.enable=false"
   backup-stager:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: memory-backup-stager
     profiles: ["local-backend"]
     restart: unless-stopped
@@ -131,12 +227,13 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   memory-agent-gateway:
     build: ./agent-gateway
     container_name: memory-agent-gateway
     restart: unless-stopped
     environment:
+      MEMORY_PUBLIC_ORIGIN: ${MEMORY_PUBLIC_ORIGIN:-}
       MEMORY_BACKEND_URL: ${MEMORY_BACKEND_URL:-http://agentmemory:3111}
       MEMORY_BACKEND_TOKEN: ${MEMORY_BACKEND_TOKEN:?Set MEMORY_BACKEND_TOKEN in .env}
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
@@ -151,13 +248,14 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   memory-dashboard:
     build: ./dashboard
     container_name: memory-dashboard
     user: "1000:1000"
     restart: unless-stopped
     environment:
+      MEMORY_PUBLIC_ORIGIN: ${MEMORY_PUBLIC_ORIGIN:-}
       MEMORY_GATEWAY_URL: ${MEMORY_GATEWAY_URL:-http://memory-agent-gateway:3112}
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:?Set MEMORY_GATEWAY_TOKEN in .env}
       MEMORY_HUB_DATA_DIR: /app/data/memory-hub
@@ -176,7 +274,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   docs-worker:
     build: ./docs-worker
     container_name: docs-worker
@@ -194,7 +292,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   email-worker:
     build: ./email-worker
     container_name: email-worker
@@ -212,7 +310,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   obsidian-worker:
     build: ./obsidian-worker
     container_name: obsidian-worker
@@ -230,7 +328,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   github-worker:
     build: ./github-worker
     container_name: github-worker
@@ -251,7 +349,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   enricher-worker:
     build: ./enricher-worker
     container_name: enricher-worker
@@ -261,13 +359,37 @@ services:
       AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}
       LLM_FREE_BASE_URL: ${LLM_FREE_BASE_URL:-https://opencode.ai/zen/v1}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+      LLM_FALLBACK_API_KEY: ""
+      ENRICH_CATEGORIES: emails,obsidian,documents,code,agent
+      ENRICH_EMAIL_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_EMAIL_FALLBACK_PROVIDER: opencode
+      ENRICH_EMAIL_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_EMAIL_FALLBACK_MODEL: deepseek-v4-flash
+      ENRICH_EMAIL_STRATEGY: all
+      ENRICH_EMAIL_MAX_CHARS: 4000
+      ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS: "true"
+      ENRICH_KNOWLEDGE_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_KNOWLEDGE_FALLBACK_PROVIDER: opencode
+      ENRICH_KNOWLEDGE_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_KNOWLEDGE_FALLBACK_MODEL: deepseek-v4-flash
       ENRICH_BATCH_SIZE: ${ENRICH_BATCH_SIZE:-100}
       ENRICH_CONCURRENCY: ${ENRICH_CONCURRENCY:-50}
-      GEMINI_CONCURRENCY: ${GEMINI_CONCURRENCY:-8}
+      ENRICH_FALLBACK_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      NVIDIA_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_REQUEST_TIMEOUT_SECONDS: ${NVIDIA_REQUEST_TIMEOUT_SECONDS:-90}
+      NVIDIA_CONCURRENCY: ${NVIDIA_CONCURRENCY:-2}
+      NVIDIA_MAX_TOKENS: ${NVIDIA_MAX_TOKENS:-512}
+      NVIDIA_TEMPERATURE: ${NVIDIA_TEMPERATURE:-0.2}
+      NVIDIA_ENABLE_THINKING: ${NVIDIA_ENABLE_THINKING:-false}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-nim-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-nim-fallback-cooldown.json
+      WORKER_NAME: enricher-worker-nim
       SECRETS_PATH: /app/shared-settings/secrets.json
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
@@ -277,7 +399,113 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
+  enricher-worker-opencode:
+    build: ./enricher-worker
+    container_name: enricher-worker-opencode
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}
+      LLM_FREE_BASE_URL: ${LLM_FREE_BASE_URL:-https://opencode.ai/zen/v1}
+      LLM_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      LLM_REASONING_EFFORT: low
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_FALLBACK_API_KEY: ""
+      ENRICH_CATEGORIES: obsidian,documents,code
+      ENRICH_EMAIL_STRATEGY: off
+      ENRICH_EMAIL_MAX_CHARS: 4000
+      ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS: "true"
+      ENRICH_EMAIL_PRIMARY_PROVIDER: none
+      ENRICH_EMAIL_FALLBACK_PROVIDER: none
+      ENRICH_EMAIL_MODEL: nemotron-3-super-free
+      ENRICH_EMAIL_FALLBACK_MODEL: nemotron-3-super-free
+      ENRICH_KNOWLEDGE_PRIMARY_PROVIDER: nvidia_nim
+      ENRICH_KNOWLEDGE_FALLBACK_PROVIDER: opencode
+      ENRICH_KNOWLEDGE_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      ENRICH_KNOWLEDGE_FALLBACK_MODEL: deepseek-v4-flash
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      NVIDIA_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      NVIDIA_REQUEST_TIMEOUT_SECONDS: ${NVIDIA_REQUEST_TIMEOUT_SECONDS:-90}
+      NVIDIA_CONCURRENCY: ${NVIDIA_CONCURRENCY:-2}
+      NVIDIA_MAX_TOKENS: ${NVIDIA_MAX_TOKENS:-512}
+      NVIDIA_TEMPERATURE: ${NVIDIA_TEMPERATURE:-0.2}
+      NVIDIA_ENABLE_THINKING: ${NVIDIA_ENABLE_THINKING:-false}
+      ENRICH_BATCH_SIZE: ${ENRICH_BATCH_SIZE:-100}
+      ENRICH_CONCURRENCY: ${ENRICH_OPENCODE_CONCURRENCY:-1}
+      ENRICH_FALLBACK_REQUESTS_PER_MINUTE: ${NVIDIA_REQUESTS_PER_MINUTE:-15}
+      FALLBACK_COOLDOWN_SECONDS: ${ENRICH_OPENCODE_COOLDOWN_SECONDS:-10}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-opencode-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-opencode-fallback-cooldown.json
+      STATUS_PATH: /app/status/enricher-worker-opencode.json
+      WORKER_NAME: enricher-worker-opencode
+      SECRETS_PATH: /app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "diun.enable=false"
+  enricher-worker-email-remote:
+    build: ./enricher-worker
+    container_name: enricher-worker-email-remote
+    restart: unless-stopped
+    environment:
+      AGENTMEMORY_URL: ${AGENTMEMORY_URL:-http://agentmemory:3111}
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      ENRICH_PROVIDER: remote_ollama
+      ENRICH_CATEGORIES: emails
+      ENRICH_EMAIL_STRATEGY: small_only
+      ENRICH_EMAIL_MAX_CHARS: 8000
+      ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS: "true"
+      WORKER_NAME: enricher-worker-email-remote
+      ENRICH_BATCH_SIZE: ${ENRICH_REMOTE_BATCH_SIZE:-50}
+      ENRICH_CONCURRENCY: ${ENRICH_REMOTE_CONCURRENCY:-2}
+      REMOTE_OLLAMA_HOST: ${REMOTE_OLLAMA_HOST:-http://192.168.29.159:11434}
+      REMOTE_OLLAMA_MODEL: ${REMOTE_OLLAMA_MODEL:-qwen3.5:9b}
+      REMOTE_OLLAMA_TIMEOUT_SECONDS: ${REMOTE_OLLAMA_TIMEOUT_SECONDS:-180}
+      REMOTE_OLLAMA_TEXT_LIMIT: ${REMOTE_OLLAMA_TEXT_LIMIT:-4000}
+      REMOTE_OLLAMA_NUM_PREDICT: ${REMOTE_OLLAMA_NUM_PREDICT:-384}
+      REMOTE_OLLAMA_TEMPERATURE: ${REMOTE_OLLAMA_TEMPERATURE:-0.1}
+      REMOTE_OLLAMA_CONCURRENCY: ${REMOTE_OLLAMA_CONCURRENCY:-2}
+      REMOTE_OLLAMA_THINK: ${REMOTE_OLLAMA_THINK:-false}
+      PRIMARY_COOLDOWN_STATE_PATH: /app/status/enricher-worker-email-remote-primary-cooldown.json
+      FALLBACK_COOLDOWN_STATE_PATH: /app/status/enricher-worker-email-remote-fallback-cooldown.json
+      STATUS_PATH: /app/status/enricher-worker-email-remote.json
+      SECRETS_PATH: /app/shared-settings/secrets.json
+    volumes:
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/enrichment.json:/app/config/settings.json:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings:/app/shared-settings:ro
+      - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/status:/app/status
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "diun.enable=false"
+  reflection-worker:
+    build: ./enricher-worker
+    container_name: reflection-worker
+    profiles: ["local-backend"]
+    restart: unless-stopped
+    command: python reflection_worker.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      AGENTMEMORY_URL: "http://agentmemory:3111"
+      AGENTMEMORY_TOKEN: ${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "diun.enable=false"
 networks:
   memory-internal:
     name: ${MEMORY_NETWORK_NAME:-memory-internal}

@@ -51,17 +51,17 @@
 <!-- Sticky header -->
 <header class="sticky top-0 z-50">
 	<!-- Nav bar -->
-	<div class="flex items-center justify-between gap-6 px-6 py-3 border-b border-white/[0.06] bg-[#030508]/90 backdrop-blur-xl">
-		<div class="flex items-center gap-8">
+	<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 px-6 py-3 border-b border-white/[0.06] bg-[#030508]/90 backdrop-blur-xl">
+		<div class="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-8">
 			<div class="flex items-center gap-2.5">
 				<div class="w-1.5 h-1.5 rounded-full bg-primary-400" style="box-shadow: 0 0 8px var(--color-primary-400)"></div>
 				<span class="font-mono text-[0.6rem] font-bold tracking-[0.4em] uppercase text-surface-300">Memory Hub</span>
 			</div>
-			<nav class="flex items-center gap-1">
+			<nav class="flex items-center gap-1 overflow-x-auto no-scrollbar">
 				{#each nav as item}
 					<a
 						href={item.href}
-						class="font-mono text-[0.62rem] font-semibold tracking-[0.16em] uppercase px-3 py-1.5 transition-colors {page.url.pathname === item.href ? 'text-primary-300 bg-primary-500/10' : 'text-surface-500 hover:text-surface-200'}"
+						class="font-mono text-[0.62rem] font-semibold tracking-[0.16em] uppercase px-3 py-1.5 transition-colors whitespace-nowrap {page.url.pathname === item.href ? 'text-primary-300 bg-primary-500/10' : 'text-surface-500 hover:text-surface-200'}"
 					>
 						{item.label}
 					</a>
@@ -70,12 +70,12 @@
 		</div>
 
 		{#if page.data?.backendError}
-			<span class="process-status error font-mono text-[0.58rem]">
+			<span class="process-status error font-mono text-[0.58rem] self-start md:self-auto mt-1 md:mt-0">
 				<span class="pulse-dot mr-1.5"></span>
 				Backend offline
 			</span>
 		{:else if page.url.pathname === '/'}
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center gap-2 self-start md:self-auto mt-1 md:mt-0">
 				<span class="process-status running font-mono text-[0.58rem]">
 					<span class="pulse-dot mr-1.5"></span>
 					Gateway online

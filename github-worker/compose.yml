@@ -19,7 +19,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
 networks:
   memory-internal:
-    driver: bridge
+    external: true

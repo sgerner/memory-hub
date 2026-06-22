@@ -18,7 +18,24 @@ AGENTMEMORY_TOKEN = os.getenv("AGENTMEMORY_TOKEN")
 SETTINGS_PATH = "/app/config/settings.json"
 SECRETS_PATH = os.getenv("SECRETS_PATH", "/app/shared-settings/secrets.json")
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/enricher-worker.json")
+WORKER_NAME = os.getenv("WORKER_NAME", "enricher-worker").strip() or "enricher-worker"
 ENRICH_PROVIDER = os.getenv("ENRICH_PROVIDER", "opencode").strip().lower()
+REMOTE_OLLAMA_HOST = os.getenv("REMOTE_OLLAMA_HOST", "").strip()
+REMOTE_OLLAMA_MODEL = os.getenv("REMOTE_OLLAMA_MODEL", "qwen3.5:9b").strip()
+REMOTE_OLLAMA_TIMEOUT_SECONDS = int(os.getenv("REMOTE_OLLAMA_TIMEOUT_SECONDS", "180"))
+REMOTE_OLLAMA_TEXT_LIMIT = int(os.getenv("REMOTE_OLLAMA_TEXT_LIMIT", "4000"))
+REMOTE_OLLAMA_NUM_PREDICT = int(os.getenv("REMOTE_OLLAMA_NUM_PREDICT", "384"))
+REMOTE_OLLAMA_TEMPERATURE = float(os.getenv("REMOTE_OLLAMA_TEMPERATURE", "0.1"))
+REMOTE_OLLAMA_CONCURRENCY = int(os.getenv("REMOTE_OLLAMA_CONCURRENCY", "2"))
+REMOTE_OLLAMA_THINK = os.getenv("REMOTE_OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENRICH_CATEGORIES = [
+    item.strip()
+    for item in os.getenv("ENRICH_CATEGORIES", "emails,obsidian,documents,code").split(",")
+    if item.strip()
+]
+ENRICH_EMAIL_STRATEGY = os.getenv("ENRICH_EMAIL_STRATEGY", "all").strip().lower()
+ENRICH_EMAIL_MAX_CHARS = int(os.getenv("ENRICH_EMAIL_MAX_CHARS", "1500"))
+ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS = os.getenv("ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 OPENCODE_GO_BASE_URL = os.getenv("LLM_BASE_URL", "https://opencode.ai/zen/go/v1")
 OPENCODE_ZEN_BASE_URL = os.getenv("LLM_FREE_BASE_URL", "https://opencode.ai/zen/v1")
@@ -26,6 +43,15 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
 GEMINI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "90"))
 GEMINI_CONCURRENCY = int(os.getenv("GEMINI_CONCURRENCY", "8"))
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-super-120b-a12b").strip()
+NVIDIA_REQUEST_TIMEOUT_SECONDS = int(os.getenv("NVIDIA_REQUEST_TIMEOUT_SECONDS", "90"))
+NVIDIA_REQUESTS_PER_MINUTE = int(os.getenv("NVIDIA_REQUESTS_PER_MINUTE", "15"))
+NVIDIA_CONCURRENCY = int(os.getenv("NVIDIA_CONCURRENCY", "2"))
+NVIDIA_MAX_TOKENS = int(os.getenv("NVIDIA_MAX_TOKENS", "512"))
+NVIDIA_TEMPERATURE = float(os.getenv("NVIDIA_TEMPERATURE", "0.2"))
+NVIDIA_ENABLE_THINKING = os.getenv("NVIDIA_ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
 PRIMARY_COOLDOWN_SECONDS = 5 * 60 * 60
 PRIMARY_COOLDOWN_STATE_PATH = os.getenv(
     "PRIMARY_COOLDOWN_STATE_PATH",
@@ -46,6 +72,7 @@ CATEGORY_LABELS = {
     "obsidian": "Obsidian note",
     "documents": "document",
     "code": "code file",
+    "agent": "agent interaction",
 }
 EXCLUDED_METADATA_KEYS = {
     "id",
@@ -61,6 +88,7 @@ SOURCE_METADATA_PRIORITY = {
     "documents": ["title", "name", "path", "file_path", "filepath", "filename", "source", "origin", "project", "author", "tags", "folder"],
     "obsidian": ["title", "name", "path", "vault", "note", "tags", "frontmatter", "project", "source"],
     "code": ["repository", "repo", "path", "file_path", "filename", "language", "symbol", "symbols", "module", "package", "branch", "project"],
+    "agent": ["memory_kind", "created_by", "session_id", "conversation_id", "repo", "topic", "importance", "plugin", "hook_event"],
 }
 HEURISTIC_STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "have", "your", "you", "are", "not", "but",
@@ -108,19 +136,53 @@ def load_settings():
         "text_limit": 8000,
         "gemini_model": GEMINI_MODEL,
         "gemini_request_timeout_seconds": GEMINI_REQUEST_TIMEOUT_SECONDS,
+        "nvidia_api_key": NVIDIA_API_KEY,
+        "nvidia_base_url": NVIDIA_BASE_URL,
+        "nvidia_model": NVIDIA_MODEL,
+        "nvidia_request_timeout_seconds": NVIDIA_REQUEST_TIMEOUT_SECONDS,
+        "nvidia_requests_per_minute": NVIDIA_REQUESTS_PER_MINUTE,
+        "nvidia_concurrency": NVIDIA_CONCURRENCY,
+        "nvidia_max_tokens": NVIDIA_MAX_TOKENS,
+        "nvidia_temperature": NVIDIA_TEMPERATURE,
+        "nvidia_enable_thinking": NVIDIA_ENABLE_THINKING,
+        "remote_ollama_host": REMOTE_OLLAMA_HOST,
+        "remote_ollama_model": REMOTE_OLLAMA_MODEL,
+        "remote_ollama_timeout_seconds": REMOTE_OLLAMA_TIMEOUT_SECONDS,
+        "remote_ollama_text_limit": REMOTE_OLLAMA_TEXT_LIMIT,
+        "remote_ollama_num_predict": REMOTE_OLLAMA_NUM_PREDICT,
+        "remote_ollama_temperature": REMOTE_OLLAMA_TEMPERATURE,
+        "remote_ollama_concurrency": REMOTE_OLLAMA_CONCURRENCY,
+        "remote_ollama_think": REMOTE_OLLAMA_THINK,
+        "enrich_categories": ENRICH_CATEGORIES,
+        "email_strategy": ENRICH_EMAIL_STRATEGY,
+        "email_max_chars": ENRICH_EMAIL_MAX_CHARS,
+        "email_require_no_attachments": ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS,
+        "email_primary_provider": "opencode",
+        "email_fallback_provider": "opencode",
         "email_model": "deepseek-v4-flash",
         "email_fallback_model": "deepseek-v4-flash-free",
         "knowledge_model": "deepseek-v4-flash",
         "knowledge_fallback_model": "deepseek-v4-flash-free",
+        "knowledge_primary_provider": "opencode",
+        "knowledge_fallback_provider": "opencode",
         "fallback_requests_per_minute": 4,
     }
     configured = load_json(SETTINGS_PATH, {})
-    for key in ("batch_size", "sleep_interval", "concurrency", "gemini_concurrency", "text_limit", "fallback_requests_per_minute"):
+    for key in ("batch_size", "sleep_interval", "concurrency", "gemini_concurrency", "text_limit", "fallback_requests_per_minute", "remote_ollama_timeout_seconds", "remote_ollama_text_limit", "remote_ollama_num_predict", "remote_ollama_temperature", "remote_ollama_concurrency", "email_max_chars", "nvidia_request_timeout_seconds", "nvidia_requests_per_minute", "nvidia_concurrency", "nvidia_max_tokens", "nvidia_temperature"):
         if key in configured:
-            settings[key] = int(configured[key])
-    for key in ("email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"):
+            settings[key] = float(configured[key]) if key in {"remote_ollama_temperature", "nvidia_temperature"} else int(configured[key])
+    for key in ("remote_ollama_host", "remote_ollama_model", "email_primary_provider", "email_model", "email_fallback_provider", "email_fallback_model", "knowledge_model", "knowledge_fallback_model", "knowledge_primary_provider", "knowledge_fallback_provider", "email_strategy", "nvidia_base_url", "nvidia_model"):
         if key in configured:
             settings[key] = str(configured[key])
+    for key in ("remote_ollama_think", "email_require_no_attachments", "nvidia_enable_thinking"):
+        if key in configured:
+            settings[key] = normalize_bool(configured[key])
+    if "enrich_categories" in configured:
+        configured_categories = configured["enrich_categories"]
+        if isinstance(configured_categories, str):
+            settings["enrich_categories"] = [item.strip() for item in configured_categories.split(",") if item.strip()]
+        elif isinstance(configured_categories, list):
+            settings["enrich_categories"] = [str(item).strip() for item in configured_categories if str(item).strip()]
 
     env_overrides = {
         "batch_size": os.getenv("ENRICH_BATCH_SIZE"),
@@ -128,16 +190,48 @@ def load_settings():
         "concurrency": os.getenv("ENRICH_CONCURRENCY"),
         "gemini_concurrency": os.getenv("GEMINI_CONCURRENCY"),
         "text_limit": os.getenv("ENRICH_TEXT_LIMIT"),
+        "remote_ollama_host": os.getenv("REMOTE_OLLAMA_HOST"),
+        "remote_ollama_model": os.getenv("REMOTE_OLLAMA_MODEL"),
+        "remote_ollama_timeout_seconds": os.getenv("REMOTE_OLLAMA_TIMEOUT_SECONDS"),
+        "remote_ollama_text_limit": os.getenv("REMOTE_OLLAMA_TEXT_LIMIT"),
+        "remote_ollama_num_predict": os.getenv("REMOTE_OLLAMA_NUM_PREDICT"),
+        "remote_ollama_temperature": os.getenv("REMOTE_OLLAMA_TEMPERATURE"),
+        "remote_ollama_concurrency": os.getenv("REMOTE_OLLAMA_CONCURRENCY"),
+        "remote_ollama_think": os.getenv("REMOTE_OLLAMA_THINK"),
+        "enrich_categories": os.getenv("ENRICH_CATEGORIES"),
+        "email_strategy": os.getenv("ENRICH_EMAIL_STRATEGY"),
+        "email_max_chars": os.getenv("ENRICH_EMAIL_MAX_CHARS"),
+        "email_require_no_attachments": os.getenv("ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS"),
+        "fallback_requests_per_minute": os.getenv("ENRICH_FALLBACK_REQUESTS_PER_MINUTE"),
+        "email_primary_provider": os.getenv("ENRICH_EMAIL_PRIMARY_PROVIDER"),
+        "email_fallback_provider": os.getenv("ENRICH_EMAIL_FALLBACK_PROVIDER"),
         "email_model": os.getenv("ENRICH_EMAIL_MODEL"),
         "email_fallback_model": os.getenv("ENRICH_EMAIL_FALLBACK_MODEL"),
         "knowledge_model": os.getenv("ENRICH_KNOWLEDGE_MODEL"),
         "knowledge_fallback_model": os.getenv("ENRICH_KNOWLEDGE_FALLBACK_MODEL"),
+        "knowledge_primary_provider": os.getenv("ENRICH_KNOWLEDGE_PRIMARY_PROVIDER"),
+        "knowledge_fallback_provider": os.getenv("ENRICH_KNOWLEDGE_FALLBACK_PROVIDER"),
+        "nvidia_base_url": os.getenv("NVIDIA_BASE_URL"),
+        "nvidia_model": os.getenv("NVIDIA_MODEL"),
+        "nvidia_request_timeout_seconds": os.getenv("NVIDIA_REQUEST_TIMEOUT_SECONDS"),
+        "nvidia_requests_per_minute": os.getenv("NVIDIA_REQUESTS_PER_MINUTE"),
+        "nvidia_concurrency": os.getenv("NVIDIA_CONCURRENCY"),
+        "nvidia_max_tokens": os.getenv("NVIDIA_MAX_TOKENS"),
+        "nvidia_temperature": os.getenv("NVIDIA_TEMPERATURE"),
+        "nvidia_enable_thinking": os.getenv("NVIDIA_ENABLE_THINKING"),
     }
     for key, value in env_overrides.items():
         if value is None or value == "":
             continue
-        if key in {"email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model"}:
+        if key in {"remote_ollama_think", "email_require_no_attachments", "nvidia_enable_thinking"}:
+            settings[key] = normalize_bool(value)
+            continue
+        if key in {"remote_ollama_host", "remote_ollama_model", "email_primary_provider", "email_fallback_provider", "email_model", "email_fallback_model", "knowledge_model", "knowledge_fallback_model", "knowledge_primary_provider", "knowledge_fallback_provider", "email_strategy", "nvidia_base_url", "nvidia_model"}:
             settings[key] = str(value)
+        elif key in {"remote_ollama_temperature", "nvidia_temperature"}:
+            settings[key] = float(value)
+        elif key == "enrich_categories":
+            settings[key] = [item.strip() for item in str(value).split(",") if item.strip()]
         else:
             settings[key] = int(value)
     return settings
@@ -149,6 +243,7 @@ def load_secrets():
     return {
         "llm_api_key": primary_api_key,
         "gemini_api_key": str(secrets.get("gemini_api_key") or os.getenv("GEMINI_API_KEY", "")).strip(),
+        "nvidia_api_key": str(secrets.get("nvidia_api_key") or os.getenv("NVIDIA_API_KEY", "")).strip(),
         "fallback_api_key": str(
             secrets.get("fallback_llm_api_key")
             or secrets.get("llm_fallback_api_key")
@@ -159,6 +254,8 @@ def load_secrets():
 
 
 def effective_concurrency(settings, secrets):
+    if ENRICH_PROVIDER == "remote_ollama":
+        return max(1, settings["remote_ollama_concurrency"])
     if ENRICH_PROVIDER == "gemini":
         return max(1, settings["gemini_concurrency"])
     if secrets["llm_api_key"]:
@@ -267,6 +364,29 @@ def provider_status_fields(
     primary_cooldown: PrimaryCooldownState,
     fallback_cooldown: FallbackCooldownState | None = None,
 ) -> dict:
+    remote_email_active = ENRICH_PROVIDER == "remote_ollama" and bool(settings.get("remote_ollama_host")) and bool(settings.get("remote_ollama_model"))
+    remote_email_fields = {
+        "remote_email_provider": f"ollama:{settings['remote_ollama_model']}" if remote_email_active else "none",
+        "remote_email_enabled": remote_email_active,
+        "remote_email_max_chars": settings.get("email_max_chars", ENRICH_EMAIL_MAX_CHARS),
+        "remote_email_concurrency": settings.get("remote_ollama_concurrency", REMOTE_OLLAMA_CONCURRENCY),
+        "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+        "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
+    }
+    email_primary_provider = resolve_provider_name(settings.get("email_primary_provider", "auto"), settings.get("email_model", ""))
+    email_fallback_provider = resolve_provider_name(settings.get("email_fallback_provider", "auto"), settings.get("email_fallback_model", ""))
+    if ENRICH_PROVIDER == "remote_ollama":
+        return {
+            "primary_provider": f"ollama:{settings['remote_ollama_model']}" if remote_email_active else "none",
+            "fallback_provider": "none",
+            "primary_cooldown_active": False,
+            "primary_cooldown_until": "",
+            "primary_cooldown_remaining_seconds": 0,
+            "fallback_cooldown_active": False,
+            "fallback_cooldown_until": "",
+            "fallback_cooldown_remaining_seconds": 0,
+            **remote_email_fields,
+        }
     if ENRICH_PROVIDER == "gemini":
         gemini_active = bool(secrets["gemini_api_key"])
         return {
@@ -278,19 +398,33 @@ def provider_status_fields(
             "fallback_cooldown_active": False,
             "fallback_cooldown_until": "",
             "fallback_cooldown_remaining_seconds": 0,
+            **remote_email_fields,
         }
 
     primary_active = bool(secrets["llm_api_key"])
     fallback_active = bool(secrets["fallback_api_key"])
+    knowledge_primary_provider = resolve_provider_name(settings.get("knowledge_primary_provider", "auto"), settings.get("knowledge_model", ""))
+    knowledge_fallback_provider = resolve_provider_name(settings.get("knowledge_fallback_provider", "auto"), settings.get("knowledge_fallback_model", ""))
     return {
         "primary_provider": f"opencode-go:{settings['knowledge_model']}" if primary_active else "none",
         "fallback_provider": f"opencode-zen:{settings['knowledge_fallback_model']}" if fallback_active else "none",
+        "email_primary_provider": f"{email_primary_provider}:{settings['email_model']}" if email_primary_provider != "none" else "none",
+        "email_fallback_provider": f"{email_fallback_provider}:{settings['email_fallback_model']}" if email_fallback_provider != "none" else "none",
+        "knowledge_primary_provider": f"{knowledge_primary_provider}:{settings['knowledge_model']}" if knowledge_primary_provider != "none" else "none",
+        "knowledge_fallback_provider": f"{knowledge_fallback_provider}:{settings['knowledge_fallback_model']}" if knowledge_fallback_provider != "none" else "none",
+        "nvidia_primary_provider": f"nvidia-nim:{settings['nvidia_model']}" if bool(secrets["nvidia_api_key"]) else "none",
+        "nvidia_enabled": bool(secrets["nvidia_api_key"]),
+        "nvidia_model": settings.get("nvidia_model", NVIDIA_MODEL),
+        "nvidia_base_url": settings.get("nvidia_base_url", NVIDIA_BASE_URL),
+        "nvidia_requests_per_minute": settings.get("nvidia_requests_per_minute", NVIDIA_REQUESTS_PER_MINUTE),
+        "nvidia_enable_thinking": settings.get("nvidia_enable_thinking", NVIDIA_ENABLE_THINKING),
         "primary_cooldown_active": primary_cooldown.is_active(),
         "primary_cooldown_until": primary_cooldown.until_iso(),
         "primary_cooldown_remaining_seconds": primary_cooldown.remaining_seconds(),
         "fallback_cooldown_active": fallback_cooldown.is_active() if fallback_cooldown else False,
         "fallback_cooldown_until": fallback_cooldown.until_iso() if fallback_cooldown else "",
         "fallback_cooldown_remaining_seconds": fallback_cooldown.remaining_seconds() if fallback_cooldown else 0,
+        **remote_email_fields,
     }
 
 
@@ -317,6 +451,18 @@ def normalize_text(value):
     if isinstance(value, str):
         return value.replace("\x00", "").strip()
     return str(value).replace("\x00", "").strip()
+
+
+def resolve_provider_name(provider_name: str, model_name: str) -> str:
+    provider = normalize_text(provider_name).lower()
+    if provider in {"", "auto"}:
+        model = normalize_text(model_name).lower()
+        if model.startswith("nvidia/"):
+            return "nvidia_nim"
+        return "opencode"
+    if provider in {"none", "off"}:
+        return "none"
+    return provider
 
 
 def normalize_bool(value):
@@ -414,6 +560,36 @@ def extract_email_addresses(text: str) -> list[str]:
     return normalize_list(re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", normalize_text(text)), max_items=12)
 
 
+def parse_category_selection(value) -> list[str]:
+    if isinstance(value, list):
+        return [normalize_text(item) for item in value if normalize_text(item)]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return ["emails", "obsidian", "documents", "code"]
+
+
+def email_matches_strategy(text: str, source_metadata: dict, settings: dict) -> bool:
+    strategy = normalize_text(settings.get("email_strategy", ENRICH_EMAIL_STRATEGY)).lower()
+    max_chars = int(settings.get("email_max_chars", ENRICH_EMAIL_MAX_CHARS))
+    require_no_attachments = bool(settings.get("email_require_no_attachments", ENRICH_EMAIL_REQUIRE_NO_ATTACHMENTS))
+    body = normalize_text(strip_existing_enrichment(text))
+    if not body:
+        return False
+    has_attachments = "attachments:" in body.lower() or "attachment content:" in body.lower()
+    small_email = len(body) <= max_chars and (not require_no_attachments or not has_attachments)
+    if strategy in {"all", ""}:
+        return True
+    if strategy == "small_only":
+        return small_email
+    if strategy == "large_only":
+        return not small_email
+    if strategy == "no_attachments":
+        return not has_attachments
+    if strategy == "off":
+        return False
+    return True
+
+
 def extract_dates(text: str, metadata: dict) -> list[str]:
     dates = []
     for key in ("date", "datetime", "sent_at", "received_at", "created_at", "updated_at", "timestamp"):
@@ -508,6 +684,8 @@ def heuristic_enrichment(category: str, text: str, source_metadata: dict) -> dic
     title = pick_metadata_value(source_metadata, ["subject", "title", "name", "filename"])
     if not title:
         title = basename_without_extension(pick_metadata_value(source_metadata, ["path", "file_path", "filename", "name"]))
+    if not title and category == "agent":
+        title = pick_metadata_value(source_metadata, ["memory_kind", "kind", "repo", "topic"]) or split_sentences(text, max_sentences=1, max_chars=120)
     summary = split_sentences(text, max_sentences=2, max_chars=500) or title
     topic_seed = " ".join(part for part in [title, summary, source_context, normalize_text(text)[:4000]] if part)
     topics = normalize_list(extract_keywords(topic_seed, limit=8) + normalize_list(source_metadata.get("tags"), max_items=8), max_items=8)
@@ -563,7 +741,11 @@ def heuristic_enrichment(category: str, text: str, source_metadata: dict) -> dic
 
     if category == "code" and not project:
         project = pick_metadata_value(source_metadata, ["repository", "repo", "package", "module"])
+    if category == "agent" and not project:
+        project = pick_metadata_value(source_metadata, ["repo", "conversation_id", "plugin", "topic"])
     if category in {"documents", "obsidian"} and not key_claims:
+        key_claims = extract_keywords(topic_seed, limit=3)
+    if category == "agent" and not key_claims:
         key_claims = extract_keywords(topic_seed, limit=3)
 
     return {
@@ -827,7 +1009,66 @@ Category-specific keys:
   emails: sender, recipients, reply_needed, thread_focus
   documents and obsidian notes: project, key_claims, open_questions
   code: language, symbols, project, purpose, dependencies
+  agent interactions: project, language, symbols, purpose, key_claims, dependencies
 """
+
+
+def build_remote_email_system_prompt():
+    return """You enrich an email message for a personal memory hub.
+
+Return ONLY valid JSON. No markdown fences. No explanation text.
+
+Prefer compact, retrieval-friendly fields. Keep the summary to 2-3 sentences.
+If a field is unknown, use an empty string, empty array, or false.
+Prefer canonical names and semantic labels over raw wording.
+Use the source metadata when it helps identify titles, people, senders, recipients, and due dates.
+
+JSON keys:
+  title
+  summary
+  topics
+  people
+  organizations
+  dates
+  action_items
+  importance
+  sender
+  recipients
+  reply_needed
+  thread_focus
+"""
+
+
+def build_remote_email_source_context(metadata: dict, limit: int = 6) -> str:
+    if not metadata:
+        return ""
+
+    ordered_keys = []
+    for key in ["subject", "from", "sender", "to", "cc", "bcc", "date", "account", "folder"]:
+        if key in metadata and key not in ordered_keys:
+            ordered_keys.append(key)
+
+    for key in sorted(metadata.keys()):
+        if key in ordered_keys or key in EXCLUDED_METADATA_KEYS or key.startswith("enrichment_"):
+            continue
+        ordered_keys.append(key)
+
+    lines = []
+    for key in ordered_keys:
+        if len(lines) >= limit:
+            break
+        text = normalize_metadata_value(metadata.get(key))
+        if text:
+            lines.append(f"{display_name(key)}: {text}")
+    return "\n".join(lines)
+
+
+def build_remote_email_user_prompt(text, text_limit, source_context=""):
+    prompt = ["Category: email message"]
+    if source_context:
+        prompt.append(f"Source metadata:\n{source_context}")
+    prompt.append(f"Source text:\n{normalize_text(text)[:text_limit]}")
+    return "\n\n".join(prompt)
 
 
 def build_user_prompt(category, text, text_limit, source_context=""):
@@ -856,24 +1097,59 @@ class RateLimiter:
             self._last_call = time.time()
 
 
+def should_use_remote_email_ollama(category: str, text: str, source_metadata: dict, settings: dict) -> bool:
+    if category != "emails":
+        return False
+
+    if ENRICH_PROVIDER != "remote_ollama":
+        return False
+    host = normalize_text(settings.get("remote_ollama_host"))
+    model = normalize_text(settings.get("remote_ollama_model"))
+    if not host or not model:
+        return False
+    return email_matches_strategy(text, source_metadata, settings)
+
+
 def get_pending_memories(settings):
     try:
         pending = []
-        categories = ["emails", "obsidian", "documents", "code"]
+        categories = parse_category_selection(settings.get("enrich_categories", ENRICH_CATEGORIES))
+        batch_target = max(1, int(settings["batch_size"]))
+        page_size = max(1, min(250, batch_target))
         for category in categories:
-            url = f"{AGENTMEMORY_URL}/memories/{category}?limit={settings['batch_size']}&needs_enrichment=true"
-            response = memory_session.get(url, timeout=15)
-            if response.status_code == 200:
+            category_pending = []
+            offset = 0
+            # Keep paging until we either fill the batch with matching rows or exhaust the category.
+            while len(category_pending) < batch_target:
+                url = (
+                    f"{AGENTMEMORY_URL}/memories/{category}"
+                    f"?limit={page_size}&offset={offset}&needs_enrichment=true"
+                )
+                response = memory_session.get(url, timeout=15)
+                if response.status_code != 200:
+                    break
                 memories = response.json().get("memories", [])
+                if not memories:
+                    break
                 for item in memories:
-                    pending.append(
+                    content = item.get("document", item.get("content", ""))
+                    metadata = item.get("metadata") or {}
+                    if category == "emails" and not email_matches_strategy(content, metadata, settings):
+                        continue
+                    category_pending.append(
                         {
                             "id": item.get("id"),
                             "category": category,
-                            "content": item.get("document", item.get("content", "")),
-                            "metadata": item.get("metadata") or {},
+                            "content": content,
+                            "metadata": metadata,
                         }
                     )
+                    if len(category_pending) >= batch_target:
+                        break
+                if len(memories) < page_size:
+                    break
+                offset += page_size
+            pending.extend(category_pending)
         return pending
     except Exception as exc:
         logger.error("Failed to fetch pending memories: %s", exc)
@@ -944,6 +1220,89 @@ async def call_gemini(session, api_key, model, category, text, text_limit, sourc
         return None
 
 
+async def call_nvidia_nim(
+    session,
+    api_key,
+    base_url,
+    model,
+    category,
+    text,
+    text_limit,
+    source_context="",
+    temperature: float = 0.2,
+    max_tokens: int = 512,
+    enable_thinking: bool = False,
+    request_timeout_seconds: int = NVIDIA_REQUEST_TIMEOUT_SECONDS,
+):
+    try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": build_system_prompt(category)},
+                {"role": "user", "content": build_user_prompt(category, text, text_limit, source_context)},
+            ],
+            "temperature": temperature,
+            "top_p": 0.95,
+            "max_tokens": max_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking,
+            },
+        }
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        async with session.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=request_timeout_seconds),
+        ) as response:
+            if response.status == 429:
+                return "RATE_LIMIT"
+            response.raise_for_status()
+            data = await response.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return ""
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+            return content.strip()
+    except Exception as exc:
+        logger.error("NVIDIA NIM call to %s failed: %s", model, exc)
+        return None
+
+
+async def call_ollama(session, base_url, model, text, text_limit, source_context="", temperature=0.1, num_predict=384, think=False):
+    try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": build_remote_email_system_prompt()},
+                {"role": "user", "content": build_remote_email_user_prompt(text, text_limit, source_context)},
+            ],
+            "stream": False,
+            "format": "json",
+            "think": think,
+            "options": {
+                "temperature": temperature,
+                "num_predict": num_predict,
+            },
+        }
+        url = f"{base_url.rstrip('/')}/api/chat"
+
+        async with session.post(url, json=payload, timeout=REMOTE_OLLAMA_TIMEOUT_SECONDS) as response:
+            if response.status == 429:
+                return "RATE_LIMIT"
+            response.raise_for_status()
+            data = await response.json()
+            message = data.get("message") or {}
+            content = message.get("content") or ""
+            return content.strip()
+    except Exception as exc:
+        logger.error("Ollama call to %s failed: %s", model, exc)
+        return None
+
+
 async def enrich_with_fallback(
     session,
     text,
@@ -952,9 +1311,34 @@ async def enrich_with_fallback(
     settings,
     secrets,
     limiter,
+    nvidia_limiter,
     primary_cooldown,
     fallback_cooldown,
+    remote_ollama_semaphore,
 ):
+    if should_use_remote_email_ollama(category, text, source_metadata, settings):
+        source_context = build_remote_email_source_context(source_metadata)
+        async with remote_ollama_semaphore:
+            response = await call_ollama(
+                session,
+                settings["remote_ollama_host"],
+                settings["remote_ollama_model"],
+                text,
+                settings["remote_ollama_text_limit"],
+                source_context,
+                temperature=float(settings.get("remote_ollama_temperature", REMOTE_OLLAMA_TEMPERATURE)),
+                num_predict=int(settings.get("remote_ollama_num_predict", REMOTE_OLLAMA_NUM_PREDICT)),
+                think=bool(settings.get("remote_ollama_think", REMOTE_OLLAMA_THINK)),
+            )
+        if response == "RATE_LIMIT":
+            logger.warning("Remote Ollama provider rate limited for %s.", settings["remote_ollama_model"])
+            return "RATE_LIMIT"
+        if response and extract_json_object(response):
+            return normalize_enrichment(response, category)
+        if response:
+            logger.warning("Remote Ollama response for %s was not valid JSON.", settings["remote_ollama_model"])
+        return None
+
     if ENRICH_PROVIDER == "gemini":
         if secrets["gemini_api_key"]:
             response = await call_gemini(
@@ -973,16 +1357,72 @@ async def enrich_with_fallback(
                 return normalize_enrichment(response, category)
         return None
 
+    knowledge_primary_provider = resolve_provider_name(settings.get("knowledge_primary_provider", "auto"), settings.get("knowledge_model", ""))
+    knowledge_fallback_provider = resolve_provider_name(settings.get("knowledge_fallback_provider", "auto"), settings.get("knowledge_fallback_model", ""))
     if category == "emails":
+        email_primary_provider = resolve_provider_name(settings.get("email_primary_provider", "auto"), settings["email_model"])
+        email_fallback_provider = resolve_provider_name(settings.get("email_fallback_provider", "auto"), settings["email_fallback_model"])
         primary_model = settings["email_model"]
         fallback_model = settings["email_fallback_model"]
     else:
+        email_primary_provider = "opencode"
+        email_fallback_provider = "opencode"
         primary_model = settings["knowledge_model"]
         fallback_model = settings["knowledge_fallback_model"]
 
     source_context = build_source_context(category, source_metadata)
 
-    if secrets["llm_api_key"] and not primary_cooldown.is_active():
+    if category == "emails" and email_primary_provider == "nvidia_nim":
+        nvidia_api_key = secrets["nvidia_api_key"]
+        if nvidia_api_key:
+            await nvidia_limiter.wait()
+            response = await call_nvidia_nim(
+                session,
+                nvidia_api_key,
+                settings["nvidia_base_url"],
+                primary_model,
+                category,
+                text,
+                settings["text_limit"],
+                source_context,
+                temperature=float(settings.get("nvidia_temperature", NVIDIA_TEMPERATURE)),
+                max_tokens=int(settings.get("nvidia_max_tokens", NVIDIA_MAX_TOKENS)),
+                enable_thinking=bool(settings.get("nvidia_enable_thinking", NVIDIA_ENABLE_THINKING)),
+                request_timeout_seconds=int(settings.get("nvidia_request_timeout_seconds", NVIDIA_REQUEST_TIMEOUT_SECONDS)),
+            )
+            if response == "RATE_LIMIT":
+                logger.warning("NVIDIA NIM provider rate limited for %s.", primary_model)
+            elif response:
+                return normalize_enrichment(response, category)
+        elif email_fallback_provider == "opencode":
+            logger.warning("NVIDIA API key is missing for email enrichment.")
+
+    if category != "emails" and knowledge_primary_provider == "nvidia_nim":
+        nvidia_api_key = secrets["nvidia_api_key"]
+        if nvidia_api_key:
+            await nvidia_limiter.wait()
+            response = await call_nvidia_nim(
+                session,
+                nvidia_api_key,
+                settings["nvidia_base_url"],
+                primary_model,
+                category,
+                text,
+                settings["text_limit"],
+                source_context,
+                temperature=float(settings.get("nvidia_temperature", NVIDIA_TEMPERATURE)),
+                max_tokens=int(settings.get("nvidia_max_tokens", NVIDIA_MAX_TOKENS)),
+                enable_thinking=bool(settings.get("nvidia_enable_thinking", NVIDIA_ENABLE_THINKING)),
+                request_timeout_seconds=int(settings.get("nvidia_request_timeout_seconds", NVIDIA_REQUEST_TIMEOUT_SECONDS)),
+            )
+            if response == "RATE_LIMIT":
+                logger.warning("NVIDIA NIM provider rate limited for %s.", primary_model)
+            elif response:
+                return normalize_enrichment(response, category)
+        elif knowledge_fallback_provider == "opencode":
+            logger.warning("NVIDIA API key is missing for %s enrichment.", category)
+
+    if not ((category == "emails" and email_primary_provider == "nvidia_nim") or (category != "emails" and knowledge_primary_provider == "nvidia_nim")) and secrets["llm_api_key"] and not primary_cooldown.is_active():
         response = await call_llm(
             session,
             secrets["llm_api_key"],
@@ -1004,12 +1444,38 @@ async def enrich_with_fallback(
         logger.warning("Fallback provider cooling down for %s more seconds.", fallback_cooldown.remaining_seconds())
         return "RATE_LIMIT"
 
-    if secrets["fallback_api_key"]:
+    if category == "emails" and email_fallback_provider == "nvidia_nim" and secrets["nvidia_api_key"]:
+        await limiter.wait()
+        response = await call_nvidia_nim(
+            session,
+            secrets["nvidia_api_key"],
+            settings["nvidia_base_url"],
+            fallback_model,
+            category,
+            text,
+            settings["text_limit"],
+            source_context,
+            temperature=float(settings.get("nvidia_temperature", NVIDIA_TEMPERATURE)),
+            max_tokens=int(settings.get("nvidia_max_tokens", NVIDIA_MAX_TOKENS)),
+            enable_thinking=bool(settings.get("nvidia_enable_thinking", NVIDIA_ENABLE_THINKING)),
+            request_timeout_seconds=int(settings.get("nvidia_request_timeout_seconds", NVIDIA_REQUEST_TIMEOUT_SECONDS)),
+        )
+        if response == "RATE_LIMIT":
+            logger.warning("Fallback provider rate limited for %s.", fallback_model)
+            fallback_cooldown.activate(fallback_model)
+            return "RATE_LIMIT"
+        if response:
+            return normalize_enrichment(response, category)
+
+    if category == "emails" and email_fallback_provider == "none":
+        return None
+
+    if secrets["llm_api_key"]:
         await limiter.wait()
         response = await call_llm(
             session,
-            secrets["fallback_api_key"],
-            OPENCODE_ZEN_BASE_URL,
+            secrets["llm_api_key"],
+            OPENCODE_GO_BASE_URL,
             fallback_model,
             category,
             text,
@@ -1017,7 +1483,7 @@ async def enrich_with_fallback(
             source_context,
         )
         if response == "RATE_LIMIT":
-            logger.warning("Fallback provider rate limited for %s.", fallback_model)
+            logger.warning("OpenCode GO fallback rate limited for %s.", fallback_model)
             fallback_cooldown.activate(fallback_model)
             return "RATE_LIMIT"
         if response:
@@ -1056,7 +1522,18 @@ async def update_memory(session, memory_id, category, original_content, enrichme
         return False
 
 
-async def process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown):
+async def process_item(
+    session,
+    semaphore,
+    item,
+    settings,
+    secrets,
+    limiter,
+    nvidia_limiter,
+    primary_cooldown,
+    fallback_cooldown,
+    remote_ollama_semaphore,
+):
     async with semaphore:
         memory_id = item["id"]
         content = item["content"]
@@ -1071,8 +1548,10 @@ async def process_item(session, semaphore, item, settings, secrets, limiter, pri
             settings,
             secrets,
             limiter,
+            nvidia_limiter,
             primary_cooldown,
             fallback_cooldown,
+            remote_ollama_semaphore,
         )
         if enrichment == "RATE_LIMIT":
             return "RATE_LIMIT"
@@ -1094,14 +1573,16 @@ async def enrich_batch():
     concurrency = effective_concurrency(settings, secrets)
     pending = get_pending_memories(settings)
     fallback_requests_per_minute = max(1, settings["fallback_requests_per_minute"])
+    nvidia_requests_per_minute = max(1, int(settings.get("nvidia_requests_per_minute", NVIDIA_REQUESTS_PER_MINUTE)))
     primary_cooldown = PrimaryCooldownState()
     fallback_cooldown = FallbackCooldownState()
+    remote_ollama_semaphore = asyncio.Semaphore(max(1, int(settings.get("remote_ollama_concurrency", REMOTE_OLLAMA_CONCURRENCY))))
 
     if not pending:
         now = utc_now()
         save_status(
             {
-                "service": "enricher-worker",
+                "service": WORKER_NAME,
                 "status": "idle",
                 "last_cycle_started_at": now,
                 "last_cycle_finished_at": now,
@@ -1112,6 +1593,9 @@ async def enrich_batch():
                 "concurrency": concurrency,
                 "batch_size": settings["batch_size"],
                 "rate_limit_per_minute": fallback_requests_per_minute,
+                "nvidia_rate_limit_per_minute": nvidia_requests_per_minute,
+                "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                 "updated_at": now,
             }
         )
@@ -1120,12 +1604,13 @@ async def enrich_batch():
 
     started_at = utc_now()
     limiter = RateLimiter(fallback_requests_per_minute)
+    nvidia_limiter = RateLimiter(nvidia_requests_per_minute)
     semaphore = asyncio.Semaphore(concurrency)
     connector = aiohttp.TCPConnector(limit=concurrency)
 
     save_status(
         {
-            "service": "enricher-worker",
+            "service": WORKER_NAME,
             "status": "running",
             "last_cycle_started_at": started_at,
             "items_total": len(pending),
@@ -1134,6 +1619,9 @@ async def enrich_batch():
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
+            "nvidia_rate_limit_per_minute": nvidia_requests_per_minute,
+            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
             "updated_at": started_at,
         }
     )
@@ -1144,7 +1632,7 @@ async def enrich_batch():
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
             asyncio.create_task(
-                process_item(session, semaphore, item, settings, secrets, limiter, primary_cooldown, fallback_cooldown)
+                process_item(session, semaphore, item, settings, secrets, limiter, nvidia_limiter, primary_cooldown, fallback_cooldown, remote_ollama_semaphore)
             )
             for item in pending
         ]
@@ -1165,7 +1653,7 @@ async def enrich_batch():
                     finished_at = utc_now()
                     save_status(
                         {
-                            "service": "enricher-worker",
+                            "service": WORKER_NAME,
                             "status": "deferred",
                             "last_cycle_started_at": started_at,
                             "last_cycle_finished_at": finished_at,
@@ -1175,6 +1663,9 @@ async def enrich_batch():
                             "concurrency": concurrency,
                             "batch_size": settings["batch_size"],
                             "rate_limit_per_minute": fallback_requests_per_minute,
+                            "nvidia_rate_limit_per_minute": nvidia_requests_per_minute,
+                            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                             "updated_at": finished_at,
                         }
                     )
@@ -1188,17 +1679,20 @@ async def enrich_batch():
             finished_at = utc_now()
             save_status(
                 {
-                    "service": "enricher-worker",
+                    "service": WORKER_NAME,
                     "status": "error",
                     "last_cycle_started_at": started_at,
                     "last_cycle_finished_at": finished_at,
-                            "last_error": str(exc),
-                            "items_processed": enriched_count,
-                            "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
-                            **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
-                            "concurrency": concurrency,
-                            "batch_size": settings["batch_size"],
-                            "rate_limit_per_minute": fallback_requests_per_minute,
+                    "last_error": str(exc),
+                    "items_processed": enriched_count,
+                    "items_remaining": max(0, len(pending) - enriched_count - skipped_count),
+                    **provider_status_fields(settings, secrets, primary_cooldown, fallback_cooldown),
+                    "concurrency": concurrency,
+                    "batch_size": settings["batch_size"],
+                    "rate_limit_per_minute": fallback_requests_per_minute,
+                    "nvidia_rate_limit_per_minute": nvidia_requests_per_minute,
+                    "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+                    "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
                     "updated_at": finished_at,
                 }
             )
@@ -1207,7 +1701,7 @@ async def enrich_batch():
     finished_at = utc_now()
     save_status(
         {
-            "service": "enricher-worker",
+            "service": WORKER_NAME,
             "status": "idle",
             "last_cycle_started_at": started_at,
             "last_cycle_finished_at": finished_at,
@@ -1218,6 +1712,9 @@ async def enrich_batch():
             "concurrency": concurrency,
             "batch_size": settings["batch_size"],
             "rate_limit_per_minute": fallback_requests_per_minute,
+            "nvidia_rate_limit_per_minute": nvidia_requests_per_minute,
+            "email_strategy": settings.get("email_strategy", ENRICH_EMAIL_STRATEGY),
+            "enrich_categories": settings.get("enrich_categories", ENRICH_CATEGORIES),
             "updated_at": finished_at,
         }
     )

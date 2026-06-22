@@ -29,6 +29,10 @@ STATE_PATH = "/app/config/state.json"
 ACCOUNTS_PATH = "/app/config/accounts.json"
 SETTINGS_PATH = "/app/config/settings.json"
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/email-worker.json")
+QUARANTINE_FLAGS = {'\\trash', '\\spam', '\\junk', '\\deleted'}
+QUARANTINE_KEYWORDS = ['spam', 'junk', 'trash', 'deleted', 'bulk', 'low-priority']
+DRAFT_FLAGS = {'\\drafts'}
+DRAFT_KEYWORDS = ['draft']
 
 session = requests.Session()
 session.headers.update({"Authorization": f"Bearer {AGENTMEMORY_TOKEN}"})
@@ -95,6 +99,21 @@ def sanitize_str(val):
     # Postgres string literals cannot contain NUL (0x00) characters
     return str(val).replace('\x00', '')
 
+def normalize_message_id(val):
+    text = sanitize_str(val).strip()
+    if text.startswith("<") and text.endswith(">") and len(text) > 2:
+        text = text[1:-1].strip()
+    return text
+
+def classify_folder(flags, folder_name):
+    norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
+    folder_lower = sanitize_str(folder_name).lower()
+    if any(flag in DRAFT_FLAGS for flag in norm_flags) or any(keyword in folder_lower for keyword in DRAFT_KEYWORDS):
+        return "draft"
+    if any(flag in QUARANTINE_FLAGS for flag in norm_flags) or any(keyword in folder_lower for keyword in QUARANTINE_KEYWORDS):
+        return "quarantine"
+    return "normal"
+
 def push_to_memory(email_data):
     try:
         # Construct content
@@ -115,6 +134,7 @@ def push_to_memory(email_data):
                 "date": sanitize_str(email_data['date']),
                 "account": sanitize_str(email_data['account_name']),
                 "uid": sanitize_str(email_data['uid']),
+                "message_id": normalize_message_id(email_data.get('message_id')),
                 "needs_enrichment": "True", # Store as string for metadata filter reliability
                 "source": "email",
                 "folder": sanitize_str(email_data.get('folder', 'unknown'))
@@ -128,6 +148,28 @@ def push_to_memory(email_data):
         return True
     except Exception as e:
         logger.error(f"Failed to push to memory: {e}")
+        return False
+
+def delete_from_memory(email_data):
+    try:
+        payload = {
+            "account": sanitize_str(email_data['account_name']),
+            "folder": sanitize_str(email_data.get('folder', '')),
+            "uid": sanitize_str(email_data.get('uid', '')),
+            "message_id": normalize_message_id(email_data.get('message_id')),
+            "subject": sanitize_str(email_data.get('subject')),
+            "sender": sanitize_str(email_data.get('from')),
+            "receiver": sanitize_str(email_data.get('to')),
+            "date": sanitize_str(email_data.get('date')),
+            "reason": sanitize_str(email_data.get('reason', 'quarantine folder')),
+        }
+        resp = session.post(f"{AGENTMEMORY_URL}/delete-email", json=payload, timeout=35)
+        if resp.status_code not in [200, 201, 204]:
+            logger.error(f"Agentmemory delete error {resp.status_code}: {resp.text}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete memory: {e}")
         return False
 
 def process_account(account, settings):
@@ -167,15 +209,10 @@ def process_account(account, settings):
             
             for (flags, delimiter, folder_name) in folders:
                 if b'\\Noselect' in flags: continue
-                
-                # Intelligently identify and skip junk/spam/trash folders
-                norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
-                skip_flags = {'\\trash', '\\spam', '\\junk', '\\drafts', '\\deleted'}
-                if any(flag in skip_flags for flag in norm_flags): continue
-                
-                folder_lower = folder_name.lower()
-                skip_keywords = ['spam', 'junk', 'trash', 'deleted', 'bulk', 'low-priority']
-                if any(x in folder_lower for x in skip_keywords): continue
+
+                folder_kind = classify_folder(flags, folder_name)
+                if folder_kind == "draft":
+                    continue
 
                 logger.info(f"Scanning folder: {folder_name}")
                 folders_seen += 1
@@ -190,7 +227,10 @@ def process_account(account, settings):
                 
                 if not uids_to_process: continue
 
-                logger.info(f"Ingesting {len(uids_to_process)} emails from {folder_name}")
+                if folder_kind == "quarantine":
+                    logger.info(f"Purging {len(uids_to_process)} emails from {folder_name}")
+                else:
+                    logger.info(f"Ingesting {len(uids_to_process)} emails from {folder_name}")
 
                 for uid in uids_to_process:
                     try:
@@ -207,6 +247,42 @@ def process_account(account, settings):
                         from_ = msg.get("From")
                         to_ = msg.get("To")
                         date_ = str(msg_data[uid][b'INTERNALDATE'])
+                        message_id = normalize_message_id(msg.get("Message-ID"))
+
+                        if folder_kind == "quarantine":
+                            if delete_from_memory({
+                                "account_name": name,
+                                "uid": uid,
+                                "subject": subject,
+                                "from": from_,
+                                "to": to_,
+                                "date": date_,
+                                "folder": folder_name,
+                                "message_id": message_id,
+                                "reason": "quarantine folder",
+                            }):
+                                account_state[folder_name] = uid
+                                state[name] = account_state
+                                save_state(state)
+                                messages_processed += 1
+                                continue
+
+                            logger.warning(
+                                "Memory backend is busy; deferring remaining quarantine messages for this account until the next cycle."
+                            )
+                            save_status({
+                                "service": "email-worker",
+                                "status": "deferred",
+                                "current_account": name,
+                                "last_cycle_started_at": started_at,
+                                "last_cycle_finished_at": utc_now(),
+                                "last_error": "Memory backend is unavailable; remaining quarantine messages were deferred.",
+                                "items_processed": messages_processed,
+                                "items_total": len(uids_to_process),
+                                "details": {"folders_seen": folders_seen},
+                                "updated_at": utc_now(),
+                            })
+                            return True
 
                         body = ""
                         attachments = []
@@ -268,7 +344,8 @@ def process_account(account, settings):
                             "to": to_,
                             "date": date_,
                             "body": body,
-                            "folder": folder_name
+                            "folder": folder_name,
+                            "message_id": message_id,
                         }):
                             account_state[folder_name] = uid
                             state[name] = account_state
