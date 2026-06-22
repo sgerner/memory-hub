@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import contextlib
 import hmac
 import os
@@ -40,6 +41,8 @@ MCP_ALLOWED_ORIGINS = [
 ]
 CATEGORY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 METADATA_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+logger = logging.getLogger(__name__)
+
 MANAGED_METADATA = {
     "lifecycle_status",
     "memory_kind",
@@ -252,8 +255,40 @@ class MemoryService:
     async def recall(self, request: MemoryRecall) -> dict[str, Any]:
         categories = request.categories or DEFAULT_CATEGORIES
         candidate_limit = min(100, request.limit * 3)
-        combined: list[dict[str, Any]] = []
 
+        async def search_category(category: str) -> dict[str, Any]:
+            return await self.backend.post(
+                "/search",
+                {
+                    "query": request.query,
+                    "category": category,
+                    "limit": candidate_limit,
+                    "metadata": request.metadata or None,
+                    "filters": request.filters,
+                    "recency_decay": request.recency_decay,
+                },
+            )
+
+        if len(categories) == 1:
+            combined: list[dict[str, Any]] = []
+            try:
+                result = await search_category(categories[0])
+                for memory in result.get("results", []):
+                    lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
+                    if request.include_inactive or lifecycle == "active":
+                        combined.append({"category": categories[0], **memory})
+            except (HTTPException, httpx.HTTPError):
+                combined = []
+            combined.sort(
+                key=lambda row: (
+                    -float(row.get("score") or 0),
+                    float(row.get("distance") or 99),
+                    -float(row.get("lexical_rank") or 0),
+                )
+            )
+            return {"results": combined[: request.limit], "searched_categories": categories}
+
+        combined: list[dict[str, Any]] = []
         try:
             result = await self.backend.post(
                 "/search-multi",
@@ -270,24 +305,15 @@ class MemoryService:
                 lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
                 if request.include_inactive or lifecycle == "active":
                     combined.append(memory)
-        except HTTPException:
+        except (HTTPException, httpx.HTTPError):
             results = await asyncio.gather(
-                *[
-                    self.backend.post(
-                        "/search",
-                        {
-                            "query": request.query,
-                            "category": category,
-                            "limit": candidate_limit,
-                            "metadata": request.metadata or None,
-                            "filters": request.filters,
-                            "recency_decay": request.recency_decay,
-                        },
-                    )
-                    for category in categories
-                ]
+                *(search_category(category) for category in categories),
+                return_exceptions=True,
             )
             for category, result in zip(categories, results):
+                if isinstance(result, Exception):
+                    logger.warning("Recall fallback search failed for category=%s query=%r: %s", category, request.query[:120], result)
+                    continue
                 for memory in result.get("results", []):
                     lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
                     if request.include_inactive or lifecycle == "active":
@@ -301,114 +327,6 @@ class MemoryService:
             )
         )
         return {"results": combined[: request.limit], "searched_categories": categories}
-
-    async def list_memories(
-        self, category: str, limit: int = 25, include_inactive: bool = False, offset: int = 0
-    ) -> dict[str, Any]:
-        result = await self.backend.get(f"/memories/{category}", {"limit": limit, "offset": offset})
-        memories = []
-        for memory in result.get("memories", []):
-            lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
-            if include_inactive or lifecycle == "active":
-                memories.append({"category": category, **memory})
-        return {
-            "category": category,
-            "memories": memories,
-            "requested_limit": limit,
-            "offset": offset,
-            "has_more": len(result.get("memories", [])) == limit,
-        }
-
-    async def overview(self, sample_limit: int = 20) -> dict[str, Any]:
-        batches = await asyncio.gather(
-            *[self.list_memories(category, sample_limit, True) for category in DEFAULT_CATEGORIES]
-        )
-        statuses = {"active": 0, "archived": 0, "forgotten": 0}
-        categories = []
-        latest = []
-        for batch in batches:
-            memories = batch["memories"]
-            active = 0
-            for memory in memories:
-                lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
-                statuses[lifecycle] = statuses.get(lifecycle, 0) + 1
-                active += lifecycle == "active"
-                latest.append(memory)
-            categories.append(
-                {
-                    "category": batch["category"],
-                    "loaded": len(memories),
-                    "active": active,
-                    "sample_limit": sample_limit,
-                }
-            )
-        latest.sort(
-            key=lambda memory: str(
-                memory.get("metadata", {}).get("updated_at")
-                or memory.get("metadata", {}).get("created_at")
-                or ""
-            ),
-            reverse=True,
-        )
-        return {
-            "categories": categories,
-            "loaded_statuses": statuses,
-            "recent": latest[:10],
-            "sample_limit": sample_limit,
-            "generated_at": utc_now(),
-        }
-
-    async def queue_status(self) -> dict[str, Any]:
-        return await self.backend.get("/queue-status")
-
-    async def patch(self, category: str, memory_id: str, patch: MemoryPatch) -> dict[str, Any]:
-        metadata = {**patch.metadata, "modified_by": patch.source_agent}
-        await self.backend.post(
-            "/update",
-            {"category": category, "id": memory_id, "content": patch.content, "metadata": metadata},
-        )
-        return {"success": True, "category": category, "id": memory_id}
-
-    async def archive(self, category: str, memory_id: str, request: LifecycleReason) -> dict[str, Any]:
-        await self.backend.post(
-            "/update",
-            {
-                "category": category,
-                "id": memory_id,
-                "metadata": {
-                    "lifecycle_status": "archived",
-                    "archived_at": utc_now(),
-                    "forget_reason": request.reason,
-                    "modified_by": request.source_agent,
-                },
-            },
-        )
-        return {"success": True, "category": category, "id": memory_id, "status": "archived"}
-
-    async def forget(self, category: str, memory_id: str, request: LifecycleReason) -> dict[str, Any]:
-        await self.backend.post(
-            "/update",
-            {
-                "category": category,
-                "id": memory_id,
-                "metadata": {
-                    "lifecycle_status": "forgotten",
-                    "forgotten_at": utc_now(),
-                    "forget_reason": request.reason,
-                    "modified_by": request.source_agent,
-                },
-            },
-        )
-        return {"success": True, "category": category, "id": memory_id, "status": "forgotten"}
-
-    async def supersede(self, request: MemorySupersede) -> dict[str, Any]:
-        created = await self.store(request, supersedes_id=request.previous_id)
-        await self.archive(
-            request.previous_category,
-            request.previous_id,
-            LifecycleReason(reason=request.reason, source_agent=request.source_agent),
-        )
-        return {"success": True, "new_memory": created, "superseded_id": request.previous_id}
 
 
 backend = Backend()

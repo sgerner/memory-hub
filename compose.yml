@@ -30,7 +30,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -52,7 +52,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   agentmemory:
     build: ./memorex-api
     container_name: agentmemory
@@ -90,7 +90,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   embedding-worker:
     build: ./memorex-api
     container_name: embedding-worker
@@ -131,7 +131,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   embedding-worker-remote:
     build: ./memorex-api
     container_name: embedding-worker-remote
@@ -171,7 +171,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   backup-stager:
     image: pgvector/pgvector:pg16
     container_name: memory-backup-stager
@@ -200,7 +200,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   memory-agent-gateway:
     build: ./agent-gateway
     container_name: memory-agent-gateway
@@ -221,7 +221,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   memory-dashboard:
     build: ./dashboard
     container_name: memory-dashboard
@@ -247,7 +247,7 @@ services:
       - proxy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   docs-worker:
     build: ./docs-worker
     container_name: docs-worker
@@ -265,7 +265,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   email-worker:
     build: ./email-worker
     container_name: email-worker
@@ -283,7 +283,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   obsidian-worker:
     build: ./obsidian-worker
     container_name: obsidian-worker
@@ -301,7 +301,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   github-worker:
     build: ./github-worker
     container_name: github-worker
@@ -322,7 +322,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   enricher-worker:
     build: ./enricher-worker
     container_name: enricher-worker
@@ -372,7 +372,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   enricher-worker-opencode:
     build: ./enricher-worker
     container_name: enricher-worker-opencode
@@ -424,7 +424,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   enricher-worker-email-remote:
     build: ./enricher-worker
     container_name: enricher-worker-email-remote
@@ -460,7 +460,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
   reflection-worker:
     build: ./enricher-worker
     container_name: reflection-worker
@@ -478,7 +478,7 @@ services:
       - memory-internal
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-
+      - "diun.enable=false"
 networks:
   memory-internal:
     name: ${MEMORY_NETWORK_NAME:-memory-internal}

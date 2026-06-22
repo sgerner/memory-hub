@@ -8,6 +8,7 @@ import math
 import threading
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import psycopg2
@@ -669,6 +670,17 @@ def search_category(cur, category: str, query_text: str, emb_str: str, limit: in
         logger.warning("Lexical search timed out for category=%s query=%r", category, query_text[:120])
     return combine_candidates(category, rows, limit, recency_decay)
 
+def search_category_parallel(category: str, query_text: str, emb_str: str, limit: int, metadata: Optional[Dict[str, Any]], filters: Optional[List[FilterCriteria]] = None, recency_decay: Optional[float] = None, ef_search: Optional[int] = None) -> list[Dict[str, Any]]:
+    started_at = time.time()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if ef_search is not None:
+                cur.execute(f"SET hnsw.ef_search = {ef_search}")
+            results = search_category(cur, category, query_text, emb_str, limit, metadata, filters, recency_decay)
+    logger.info("Search category %s completed in %.2f ms", category, (time.time() - started_at) * 1000)
+    return results
+
+
 def _ensure_table(conn, category: str, metadata: Dict[str, Any]):
     table_name = table_for(category)
     with conn.cursor() as cur:
@@ -906,30 +918,37 @@ def search_multi(data: MultiSearchQuery, token: str = Depends(verify_token)):
 
         fetch_limit = max(1, min(int(data.limit or 10), 100)) * 2
         per_category_limit = max(fetch_limit * 3, 20)
+        ef_search = data.ef_search or HNSW_EF_SEARCH
         started_at = time.time()
         emb = get_cached_embedding(data.query)
         if not emb:
             raise Exception("Failed to generate embedding")
 
-        emb_str = f"[{','.join(map(str, emb))}]"
-        combined = []
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                ef_search = data.ef_search or HNSW_EF_SEARCH
-                cur.execute(f"SET hnsw.ef_search = {ef_search}")
-                for category in categories:
-                    combined.extend(
-                        search_category(
-                            cur,
-                            category,
-                            data.query,
-                            emb_str,
-                            per_category_limit,
-                            data.metadata,
-                            data.filters,
-                            data.recency_decay,
-                        )
-                    )
+        sep = ","
+        emb_str = f"[{sep.join(map(str, emb))}]"
+        combined: list[Dict[str, Any]] = []
+        worker_count = min(len(categories), max(2, os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    search_category_parallel,
+                    category,
+                    data.query,
+                    emb_str,
+                    per_category_limit,
+                    data.metadata,
+                    data.filters,
+                    data.recency_decay,
+                    ef_search,
+                ): category
+                for category in categories
+            }
+            for future in as_completed(futures):
+                category = futures[future]
+                try:
+                    combined.extend(future.result())
+                except Exception as exc:
+                    logger.warning("Search failed for category=%s query=%r: %s", category, data.query[:120], exc)
 
         combined = combine_candidates("multi", combined, fetch_limit, data.recency_decay)
         final_results = rerank_candidates(data.query, combined, max(1, min(int(data.limit or 10), 100)))
