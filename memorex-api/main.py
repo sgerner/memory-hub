@@ -536,8 +536,12 @@ def metadata_projection_for_columns(columns: set[str], alias: str = "t") -> str:
     included = sorted(column for column in columns if column not in excluded)
     if not included:
         return "'{}'::jsonb AS metadata"
-    pairs = ", ".join(f"'{column}', {alias}.{column}" for column in included)
-    return f"jsonb_strip_nulls(jsonb_build_object({pairs})) AS metadata"
+    pairs = ", ".join(f"('{column}', to_jsonb({alias}.{column}))" for column in included)
+    return (
+        "coalesce((SELECT jsonb_object_agg(item.key, item.value) "
+        f"FROM (VALUES {pairs}) AS item(key, value) "
+        "WHERE item.value <> 'null'::jsonb), '{}'::jsonb) AS metadata"
+    )
 
 def invalidate_search_cache():
     global search_generation
