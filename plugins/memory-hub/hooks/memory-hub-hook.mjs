@@ -7,6 +7,7 @@ const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:3112';
 const DEFAULT_AGENT = 'codex';
 const DEFAULT_CATEGORIES = ['agent', 'emails', 'obsidian', 'documents', 'code'];
 const MAX_RECALL_RESULTS = 3;
+const HOOK_SOURCE = 'codex-hook';
 
 function inputFromStdin() {
   const raw = fs.readFileSync(0, 'utf8').trim();
@@ -150,14 +151,43 @@ function formatRecallResults(results = []) {
     return 'Memory Hub recall: no close matches.';
   }
 
-  const lines = ['Memory Hub recall:'];
+  const lines = ['Memory Hub recall (use only if relevant):'];
   for (const [index, result] of results.slice(0, MAX_RECALL_RESULTS).entries()) {
-    const kind = result?.metadata?.memory_kind || result?.metadata?.kind || 'memory';
+    const metadata = result?.metadata || {};
+    const kind = metadata.memory_kind || metadata.kind || 'memory';
     const category = result?.category || 'agent';
     const score = typeof result?.score === 'number' ? ` (${result.score.toFixed(2)})` : '';
-    lines.push(`${index + 1}. [${category}/${kind}] ${clip(result?.document || '', 150)}${score}`);
+    const title = metadata.enrichment_title || metadata.title || '';
+    const summary = metadata.enrichment_summary || metadata.summary || '';
+    const content = title && summary ? `${title}: ${summary}` : title || summary || result?.document || '';
+    lines.push(`${index + 1}. [${category}/${kind}] ${clip(content, 220)}${score}`);
   }
   return lines.join('\n');
+}
+
+async function recallForPrompt(prompt) {
+  const body = {
+    query: prompt,
+    categories: DEFAULT_CATEGORIES,
+    limit: 5,
+    include_inactive: false,
+    recency_decay: 365,
+  };
+
+  const recall = await gatewayRequest('/v1/recall', {
+    method: 'POST',
+    body,
+  });
+  const results = recall?.results || [];
+  if (results.length) {
+    return results;
+  }
+
+  const agentRecall = await gatewayRequest('/v1/recall', {
+    method: 'POST',
+    body: { ...body, categories: ['agent'], recency_decay: null },
+  });
+  return agentRecall?.results || [];
 }
 
 async function sessionStart(input) {
@@ -199,23 +229,14 @@ async function userPromptSubmit(input) {
   }
 
   try {
-    const recall = await gatewayRequest('/v1/recall', {
-      method: 'POST',
-      body: {
-        query: prompt,
-        categories: DEFAULT_CATEGORIES,
-        limit: 5,
-        include_inactive: false,
-        metadata: { source: 'codex-hook', hook_event: 'UserPromptSubmit' },
-      },
-    });
+    const results = await recallForPrompt(prompt);
 
     return {
       continue: true,
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext:
-          `${formatRecallResults(recall?.results || [])}\n` +
+          `${formatRecallResults(results)}\n` +
           `Memory Hub agent: ${agent}. Store confirmed durable facts after they are established.`,
       },
     };
@@ -249,7 +270,7 @@ async function stop(input) {
           retention: 'normal',
           source_agent: agent,
           metadata: {
-            source: 'codex-hook',
+            source: HOOK_SOURCE,
             hook_event: 'Stop',
             session_id: input?.session_id || null,
             turn_id: turnId || null,

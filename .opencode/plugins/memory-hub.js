@@ -116,6 +116,17 @@ function memoryOutput(payload) {
   return compactJson(payload);
 }
 
+function overviewCategories(overview) {
+  const categories = overview?.categories || {};
+  if (Array.isArray(categories)) {
+    return categories;
+  }
+  return Object.entries(categories).map(([category, details]) => ({
+    category,
+    ...(details || {}),
+  }));
+}
+
 function memoryTools() {
   return {
     memory_health: tool({
@@ -346,10 +357,10 @@ export const MemoryHubPlugin = async ({ client }) => {
           gatewayRequest("/v1/queue-status"),
           gatewayRequest("/v1/overview?sample_limit=5"),
         ]);
-        const categoryLines = (overview.categories || [])
+        const categoryLines = overviewCategories(overview)
           .map(
             (category) =>
-              `- ${category.category}: loaded=${category.loaded}, active=${category.active}, sample_limit=${category.sample_limit}`
+              `- ${category.category}: loaded=${category.loaded ?? 0}, active=${category.active ?? "unknown"}, sample_limit=${category.sample_limit ?? 5}`
           )
           .join("\n");
         output.context.push(

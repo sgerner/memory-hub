@@ -328,6 +328,120 @@ class MemoryService:
         )
         return {"results": combined[: request.limit], "searched_categories": categories}
 
+    async def list_memories(
+        self, category: str, limit: int, include_inactive: bool = False, offset: int = 0
+    ) -> dict[str, Any]:
+        result = await self.backend.get(
+            f"/memories/{category}", {"limit": limit, "offset": offset}
+        )
+        memories = []
+        for memory in result.get("memories", []):
+            lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
+            if include_inactive or lifecycle == "active":
+                memories.append({"category": category, **memory})
+        return {
+            "memories": memories,
+            "category": category,
+            "limit": limit,
+            "offset": offset,
+            "include_inactive": include_inactive,
+        }
+
+    async def overview(self, sample_limit: int = 20) -> dict[str, Any]:
+        categories: dict[str, Any] = {}
+        loaded_statuses: dict[str, int] = {}
+        for category in DEFAULT_CATEGORIES:
+            try:
+                result = await self.backend.get(
+                    f"/memories/{category}", {"limit": sample_limit, "offset": 0}
+                )
+            except (HTTPException, httpx.HTTPError):
+                categories[category] = {"memories": [], "loaded": 0, "error": "unavailable"}
+                continue
+
+            memories = [{"category": category, **memory} for memory in result.get("memories", [])]
+            for memory in memories:
+                lifecycle = memory.get("metadata", {}).get("lifecycle_status", "active")
+                loaded_statuses[lifecycle] = loaded_statuses.get(lifecycle, 0) + 1
+            categories[category] = {"memories": memories, "loaded": len(memories)}
+
+        return {
+            "categories": categories,
+            "loaded_statuses": loaded_statuses,
+            "sample_limit": sample_limit,
+            "generated_at": utc_now(),
+        }
+
+    async def queue_status(self) -> dict[str, Any]:
+        return await self.backend.get("/queue-status")
+
+    async def patch(self, category: str, memory_id: str, patch: MemoryPatch) -> dict[str, Any]:
+        metadata = {
+            **patch.metadata,
+            "modified_by": patch.source_agent,
+            "modified_at": utc_now(),
+        }
+        payload: dict[str, Any] = {
+            "category": category,
+            "id": memory_id,
+            "metadata": metadata,
+        }
+        if patch.content is not None:
+            payload["content"] = patch.content
+        if patch.related_to:
+            payload["related_to"] = patch.related_to
+        result = await self.backend.post("/update", payload)
+        return {"category": category, "id": memory_id, **result}
+
+    async def archive(self, category: str, memory_id: str, request: LifecycleReason) -> dict[str, Any]:
+        return await self._set_lifecycle(
+            category,
+            memory_id,
+            "archived",
+            "archived_at",
+            "archive_reason",
+            request,
+        )
+
+    async def forget(self, category: str, memory_id: str, request: LifecycleReason) -> dict[str, Any]:
+        return await self._set_lifecycle(
+            category,
+            memory_id,
+            "forgotten",
+            "forgotten_at",
+            "forget_reason",
+            request,
+        )
+
+    async def _set_lifecycle(
+        self,
+        category: str,
+        memory_id: str,
+        status_value: str,
+        timestamp_key: str,
+        reason_key: str,
+        request: LifecycleReason,
+    ) -> dict[str, Any]:
+        metadata = {
+            "lifecycle_status": status_value,
+            timestamp_key: utc_now(),
+            reason_key: request.reason,
+            "modified_by": request.source_agent,
+        }
+        result = await self.backend.post(
+            "/update", {"category": category, "id": memory_id, "metadata": metadata}
+        )
+        return {"category": category, "id": memory_id, "status": status_value, **result}
+
+    async def supersede(self, item: MemorySupersede) -> dict[str, Any]:
+        new_memory = await self.store(item, supersedes_id=item.previous_id)
+        previous = await self.archive(
+            item.previous_category,
+            item.previous_id,
+            LifecycleReason(reason=item.reason, source_agent=item.source_agent),
+        )
+        return {"memory": new_memory, "previous": previous}
+
 
 backend = Backend()
 service = MemoryService(backend)
