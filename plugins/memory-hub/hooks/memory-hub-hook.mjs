@@ -165,7 +165,62 @@ function formatRecallResults(results = []) {
   return lines.join('\n');
 }
 
+function normalizeForClassification(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[`*_~>#"'()[\]{},.!?:;]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wordCount(value) {
+  const words = normalizeForClassification(value).match(/[a-z0-9][a-z0-9_-]*/g);
+  return words ? words.length : 0;
+}
+
+function isLowInformationPrompt(prompt) {
+  const normalized = normalizeForClassification(prompt);
+  if (!normalized) return true;
+  if (wordCount(normalized) > 6) return false;
+
+  return /^(?:y|yes|yes please|yeah|yeah please|yep|yep please|no|nope|nah|no thanks|ok|okay|k|sure|sounds good|sounds right|that works|sgtm|thanks|thank you|continue|go ahead|go for it|do it|proceed|please do|ship it|looks good|lgtm|run it|try it|retry|again|same|confirm|confirmed|commit|commit and push)$/.test(
+    normalized
+  );
+}
+
+function isTransientOperationalPrompt(prompt) {
+  const normalized = normalizeForClassification(prompt);
+  if (!normalized) return true;
+
+  const commandPatterns = [
+    /^(?:run|rerun|execute|try)\\s+(?:the\\s+)?(?:tests?|checks?|build|lint|formatter|format|typecheck|ci)\\b/,
+    /^(?:npm|pnpm|yarn|bun|make|just|pytest|ruff|black|cargo|go|docker|docker compose)\\s+\\S+/,
+    /^git\\s+(?:add|commit|push|pull|fetch|merge|rebase|checkout|switch|status|log|diff|stash|reset|amend|tag)\\b/,
+    /^(?:please\\s+)?(?:commit|push)\\b(?:\\s+(?:the\\s+)?changes|\\s+to\\s+(?:origin|main|master|upstream)|\\s+the\\s+branch)?\\b/,
+    /^(?:please\\s+)?commit\\s+and\\s+push\\b/,
+  ];
+  if (commandPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  const logLikePatterns = [
+    /\\b(?:build|test|lint|typecheck|ci|workflow|job)\\s+(?:failed|passed|errored|timed out|is failing|is passing)\\b/,
+    /\\b(?:exit code|stack trace|traceback|exception|error log|command output)\\b/,
+  ];
+  return logLikePatterns.some((pattern) => pattern.test(normalized)) && wordCount(normalized) < 20;
+}
+
+function shouldSkipRecall(prompt) {
+  const promptText = String(prompt || '').trim();
+  if (!promptText) return true;
+  return isLowInformationPrompt(promptText) || isTransientOperationalPrompt(promptText);
+}
+
 async function recallForPrompt(prompt) {
+  if (shouldSkipRecall(prompt)) {
+    return [];
+  }
+
   const body = {
     query: prompt,
     categories: DEFAULT_CATEGORIES,
@@ -230,6 +285,9 @@ async function userPromptSubmit(input) {
 
   try {
     const results = await recallForPrompt(prompt);
+    if (!results.length) {
+      return { continue: true };
+    }
 
     return {
       continue: true,
