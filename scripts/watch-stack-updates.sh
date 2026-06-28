@@ -2,7 +2,6 @@
 set -eu
 
 apk add --no-cache git >/dev/null
-git config --global --add safe.directory /app >/dev/null 2>&1 || true
 
 cd /app
 
@@ -17,7 +16,7 @@ log() {
 
 rebuild_stack() {
   log "Pulling latest changes from ${repo_url} (${branch})..."
-  git pull --ff-only "$repo_url" "$branch"
+  git -c safe.directory=/app pull --ff-only "$repo_url" "$branch"
 
   if [ -n "$targets" ]; then
     # shellcheck disable=SC2086
@@ -39,14 +38,14 @@ rebuild_stack() {
 
 while :; do
   remote_sha="$(git ls-remote "$repo_url" "refs/heads/${branch}" | awk 'NR==1 { print $1 }')"
-  local_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+  local_sha="$(git -c safe.directory=/app rev-parse HEAD 2>/dev/null || true)"
 
   if [ -z "$remote_sha" ]; then
     log "Could not resolve origin/${branch}; retrying in ${interval}s."
   elif [ -z "$local_sha" ]; then
     log "Local checkout missing HEAD; rebuilding from origin/${branch}."
     rebuild_stack
-    local_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    local_sha="$(git -c safe.directory=/app rev-parse HEAD 2>/dev/null || true)"
   elif [ "$remote_sha" != "$local_sha" ]; then
     log "Detected new commit: ${remote_sha} (local ${local_sha})."
     rebuild_stack
