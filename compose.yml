@@ -350,6 +350,24 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "diun.enable=false"
+  memory-hub-updater:
+    image: docker:cli
+    container_name: memory-hub-updater
+    profiles: ["remote-update"]
+    restart: unless-stopped
+    environment:
+      MEMORY_HUB_UPDATE_BRANCH: ${MEMORY_HUB_UPDATE_BRANCH:-main}
+      MEMORY_HUB_UPDATE_INTERVAL_SECONDS: ${MEMORY_HUB_UPDATE_INTERVAL_SECONDS:-900}
+      MEMORY_HUB_UPDATE_SERVICES: ${MEMORY_HUB_UPDATE_SERVICES:-}
+    command: ["/bin/sh", "/app/scripts/watch-stack-updates.sh"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/app
+    networks:
+      - memory-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "diun.enable=false"
   enricher-worker:
     build: ./enricher-worker
     container_name: enricher-worker
