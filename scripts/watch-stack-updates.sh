@@ -2,6 +2,7 @@
 set -eu
 
 apk add --no-cache git >/dev/null
+git config --global --add safe.directory /app >/dev/null 2>&1 || true
 
 cd /app
 
