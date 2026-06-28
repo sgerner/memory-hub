@@ -8,14 +8,15 @@ cd /app
 branch="${MEMORY_HUB_UPDATE_BRANCH:-main}"
 interval="${MEMORY_HUB_UPDATE_INTERVAL_SECONDS:-900}"
 targets="${MEMORY_HUB_UPDATE_SERVICES:-}"
+repo_url="${MEMORY_HUB_UPDATE_REPO_URL:-https://github.com/sgerner/memory-hub.git}"
 
 log() {
   printf '%s\n' "$*"
 }
 
 rebuild_stack() {
-  log "Pulling latest changes from origin/${branch}..."
-  git pull --ff-only origin "$branch"
+  log "Pulling latest changes from ${repo_url} (${branch})..."
+  git pull --ff-only "$repo_url" "$branch"
 
   if [ -n "$targets" ]; then
     # shellcheck disable=SC2086
@@ -36,7 +37,7 @@ rebuild_stack() {
 }
 
 while :; do
-  remote_sha="$(git ls-remote origin "refs/heads/${branch}" | awk 'NR==1 { print $1 }')"
+  remote_sha="$(git ls-remote "$repo_url" "refs/heads/${branch}" | awk 'NR==1 { print $1 }')"
   local_sha="$(git rev-parse HEAD 2>/dev/null || true)"
 
   if [ -z "$remote_sha" ]; then

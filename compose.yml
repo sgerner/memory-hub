@@ -358,6 +358,7 @@ services:
     environment:
       MEMORY_HUB_UPDATE_BRANCH: ${MEMORY_HUB_UPDATE_BRANCH:-main}
       MEMORY_HUB_UPDATE_INTERVAL_SECONDS: ${MEMORY_HUB_UPDATE_INTERVAL_SECONDS:-900}
+      MEMORY_HUB_UPDATE_REPO_URL: ${MEMORY_HUB_UPDATE_REPO_URL:-https://github.com/sgerner/memory-hub.git}
       MEMORY_HUB_UPDATE_SERVICES: ${MEMORY_HUB_UPDATE_SERVICES:-}
     command: ["/bin/sh", "/app/scripts/watch-stack-updates.sh"]
     volumes:
