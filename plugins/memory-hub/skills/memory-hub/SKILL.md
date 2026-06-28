@@ -10,6 +10,7 @@ Use the Memory Hub tools directly when the task benefits from prior context or d
 ## Tool usage
 
 - Call `memory_recall` before answering when the task may depend on past decisions, preferences, or project context.
+- Call `memory_get` for a specific recalled `category` and `id` only when the compact recall snippet is relevant but insufficient.
 - Call `memory_store` after a fact, preference, decision, or procedure is confirmed and should persist.
 - Call `memory_list` when you need to inspect recent records or confirm provenance.
 - Call `memory_patch` to correct content or add non-lifecycle metadata.
@@ -22,6 +23,7 @@ Use the Memory Hub tools directly when the task benefits from prior context or d
 ## Behavior
 
 - Prefer concise memory contents.
+- Treat automatic recall as a token-efficient index, not a full transcript; fetch details selectively.
 - Use explicit source metadata when it helps future auditing.
 - Favor archive or supersede over delete unless a human explicitly asks for purge.
 - Keep recall and storage scoped to the relevant categories instead of searching everything by default.

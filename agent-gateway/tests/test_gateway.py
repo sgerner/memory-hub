@@ -52,6 +52,14 @@ class FakeBackend:
 
     async def get(self, path: str, params: dict | None = None) -> dict:
         self.calls.append((path, params or {}))
+        if path == "/memories/agent/recent-1":
+            return {
+                "memory": {
+                    "id": "recent-1",
+                    "document": "recent details",
+                    "metadata": {"lifecycle_status": "active"},
+                }
+            }
         return {
             "memories": [
                 {"id": "recent-1", "document": "recent", "metadata": {}},
@@ -116,6 +124,11 @@ def test_rest_lifecycle_and_auth(monkeypatch):
         assert [memory["id"] for memory in listed["memories"]] == ["recent-1"]
         assert listed["offset"] == 0
 
+        fetched = client.get("/v1/memories/agent/recent-1", headers=headers).json()
+        assert fetched["id"] == "recent-1"
+        assert fetched["category"] == "agent"
+        assert fetched["document"] == "recent details"
+
 
 def test_streamable_http_mcp_lists_memory_tools(monkeypatch):
     module = app(monkeypatch)
@@ -151,6 +164,7 @@ def test_streamable_http_mcp_lists_memory_tools(monkeypatch):
         assert "memory_recall" in tools.text
         assert "memory_store" in tools.text
         assert "memory_list" in tools.text
+        assert "memory_get" in tools.text
         assert "memory_overview" in tools.text
         assert "memory_queue_status" in tools.text
         assert "memory_forget" in tools.text

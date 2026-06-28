@@ -347,6 +347,11 @@ class MemoryService:
             "include_inactive": include_inactive,
         }
 
+    async def get_memory(self, category: str, memory_id: str) -> dict[str, Any]:
+        result = await self.backend.get(f"/memories/{category}/{memory_id}")
+        memory = result.get("memory") or {}
+        return {"category": category, **memory}
+
     async def overview(self, sample_limit: int = 20) -> dict[str, Any]:
         categories: dict[str, Any] = {}
         loaded_statuses: dict[str, int] = {}
@@ -537,6 +542,13 @@ async def memory_list(
 
 
 @mcp.tool()
+async def memory_get(category: str, memory_id: str) -> dict[str, Any]:
+    """Fetch one full memory by category and id after recall returns a compact hit."""
+    require_category(category)
+    return await service.get_memory(category, memory_id)
+
+
+@mcp.tool()
 async def memory_overview(sample_limit: int = 10) -> dict[str, Any]:
     """Return a compact category overview and recent memory sample."""
     if sample_limit < 1 or sample_limit > 100:
@@ -660,6 +672,12 @@ async def list_memories(
             detail="offset must be zero or greater",
         )
     return await service.list_memories(category, limit, include_inactive, offset)
+
+
+@app.get("/v1/memories/{category}/{memory_id}", dependencies=[Depends(require_gateway_token)])
+async def get_memory(category: str, memory_id: str) -> dict[str, Any]:
+    require_category(category)
+    return await service.get_memory(category, memory_id)
 
 
 @app.patch("/v1/memories/{category}/{memory_id}", dependencies=[Depends(require_gateway_token)])

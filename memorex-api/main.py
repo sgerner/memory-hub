@@ -1198,6 +1198,43 @@ def get_memories_endpoint(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/memories/{category}/{memory_id}")
+def get_memory_endpoint(
+    category: str,
+    memory_id: str,
+    token: str = Depends(verify_token),
+):
+    try:
+        with get_db_connection() as conn:
+            table_name = table_for(category)
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass(%s)", (table_name,))
+                if not cur.fetchone()['to_regclass']:
+                    raise HTTPException(status_code=404, detail="Memory not found")
+
+                query = f"""SELECT id, document,
+                             {metadata_projection('t')}
+                             FROM {table_name} t WHERE id = %s LIMIT 1"""
+                cur.execute(query, (memory_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Memory not found")
+
+                return {
+                    "success": True,
+                    "memory": {
+                        "id": row['id'],
+                        "document": row['document'],
+                        "metadata": row['metadata'],
+                    },
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /memories/{category}/{memory_id}: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/update")
 @app.post("/cascade-update")
 def update(data: MemoryUpdate, token: str = Depends(verify_token)):

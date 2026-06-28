@@ -6,7 +6,7 @@ import path from 'node:path';
 const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:3112';
 const DEFAULT_AGENT = 'codex';
 const DEFAULT_CATEGORIES = ['agent', 'emails', 'obsidian', 'documents', 'code'];
-const MAX_RECALL_RESULTS = 3;
+const MAX_RECALL_RESULTS = 5;
 const HOOK_SOURCE = 'codex-hook';
 
 function inputFromStdin() {
@@ -156,12 +156,18 @@ function formatRecallResults(results = []) {
     const metadata = result?.metadata || {};
     const kind = metadata.memory_kind || metadata.kind || 'memory';
     const category = result?.category || 'agent';
+    const id = result?.id ? `#${result.id}` : '';
     const score = typeof result?.score === 'number' ? ` (${result.score.toFixed(2)})` : '';
     const title = metadata.enrichment_title || metadata.title || '';
     const summary = metadata.enrichment_summary || metadata.summary || '';
+    const source = metadata.repo || metadata.source || metadata.plugin || '';
     const content = title && summary ? `${title}: ${summary}` : title || summary || result?.document || '';
-    lines.push(`${index + 1}. [${category}/${kind}] ${clip(content, 220)}${score}`);
+    const why = metadata.agent_value || metadata.future_use || metadata.reason || '';
+    const sourceText = source ? ` source=${source}` : '';
+    const whyText = why ? ` | use: ${clip(why, 120)}` : '';
+    lines.push(`${index + 1}. [${category}/${kind}${id}${sourceText}] ${clip(content, 260)}${whyText}${score}`);
   }
+  lines.push('Fetch full details only when needed with memory_get(category, memoryId).');
   return lines.join('\n');
 }
 
@@ -214,6 +220,58 @@ function shouldSkipRecall(prompt) {
   const promptText = String(prompt || '').trim();
   if (!promptText) return true;
   return isLowInformationPrompt(promptText) || isTransientOperationalPrompt(promptText);
+}
+
+function durableTurnMemory(prompt, assistantMessage) {
+  const promptText = String(prompt || '').trim();
+  const assistantText = String(assistantMessage || '').trim();
+  const combined = normalizeForClassification(`${promptText} ${assistantText}`);
+  if (!combined || wordCount(combined) < 18) {
+    return null;
+  }
+
+  const durableSignals = [
+    /\b(?:decided|decision|confirmed|preference|convention|policy|must|should|avoid|always|never)\b/,
+    /\b(?:implemented|fixed|changed|added|removed|renamed|migrated|optimized|refactored)\b/,
+    /\b(?:root cause|bug|regression|schema|contract|api|workflow|procedure|gotcha|pitfall)\b/,
+    /\b(?:future agents?|durable|remember|store|recall|cross-session)\b/,
+  ];
+  if (!durableSignals.some((pattern) => pattern.test(combined))) {
+    return null;
+  }
+
+  const kind = /\b(?:decided|decision|preference|convention|policy|must|should|avoid|always|never)\b/.test(combined)
+    ? 'decision'
+    : /\b(?:workflow|procedure|steps?|how to|runbook)\b/.test(combined)
+      ? 'procedure'
+      : /\b(?:root cause|bug|regression|fixed|implemented|changed|added|removed|optimized)\b/.test(combined)
+        ? 'fact'
+        : 'episode';
+
+  const importance = kind === 'decision' || kind === 'procedure' ? 0.75 : kind === 'fact' ? 0.65 : 0.45;
+  const title = clip(promptText || assistantText, 90);
+  const outcome = clip(assistantText || promptText, 900);
+  const goal = clip(promptText || '(not available)', 500);
+  const agentValue =
+    kind === 'decision'
+      ? 'Preserves a decision or convention future agents should follow.'
+      : kind === 'procedure'
+        ? 'Preserves a repeatable workflow future agents can reuse.'
+        : 'Preserves a completed change, bug, or project fact future agents may need.';
+
+  return {
+    content: [
+      `Agent durable ${kind}`,
+      `User goal: ${goal}`,
+      `Outcome: ${outcome || '(not available)'}`,
+      `Future agent value: ${agentValue}`,
+    ].join('\n'),
+    kind,
+    importance,
+    title,
+    summary: `${goal}${outcome && outcome !== goal ? ` -> ${outcome}` : ''}`,
+    agentValue,
+  };
 }
 
 async function recallForPrompt(prompt) {
@@ -312,19 +370,16 @@ async function stop(input) {
     const saved = turnId ? await loadTurn(pluginData, turnId) : null;
     const prompt = String(saved?.prompt || '').trim();
 
-    if ((prompt || lastAssistantMessage) && (prompt.length > 20 || lastAssistantMessage.length > 20)) {
+    const memory = durableTurnMemory(prompt, lastAssistantMessage);
+    if (memory) {
       await gatewayRequest('/v1/memories', {
         method: 'POST',
         body: {
-          content: [
-            'Codex turn episode',
-            `Prompt: ${clip(prompt, 800) || '(not available)'}`,
-            `Assistant: ${clip(lastAssistantMessage, 1000) || '(not available)'}`,
-          ].join('\n'),
+          content: memory.content,
           category: 'agent',
-          kind: 'episode',
-          importance: 0.25,
-          confidence: 0.7,
+          kind: memory.kind,
+          importance: memory.importance,
+          confidence: 0.75,
           retention: 'normal',
           source_agent: agent,
           metadata: {
@@ -332,6 +387,9 @@ async function stop(input) {
             hook_event: 'Stop',
             session_id: input?.session_id || null,
             turn_id: turnId || null,
+            title: memory.title,
+            summary: memory.summary,
+            agent_value: memory.agentValue,
             prompt_excerpt: clip(prompt, 240),
             assistant_excerpt: clip(lastAssistantMessage, 240),
           },

@@ -14,6 +14,7 @@ function usage() {
   memorex queue
   memorex recall <query> [--category <name>] [--limit <number>] [--inactive] [--recency-decay <number>] [--filter key:op:value]
   memorex list <category> [--limit <number>] [--offset <number>] [--inactive]
+  memorex get <category> <id>
   memorex store <content> [--category agent] [--kind fact] [--importance 0.5] [--confidence 0.8] [--retention normal] [--agent <name>] [--related-to <id1,id2>]
   memorex patch <category> <id> [--content <text>] [--agent <name>] [--meta key=value] [--related-to <id1,id2>]
   memorex supersede <category> <id> <content> [--new-category agent] [--kind fact] [--reason <text>] [--agent <name>]
@@ -151,6 +152,15 @@ async function main() {
       if (!positional[0]) throw new Error("list requires a category");
       result = await request(
         `/v1/memories/${encodeURIComponent(positional[0])}?limit=${encodeURIComponent(optionNumber(options, "limit", 25))}&offset=${encodeURIComponent(optionNumber(options, "offset", 0))}&include_inactive=${Boolean(options.inactive)}`,
+        "GET",
+        undefined,
+        config,
+      );
+      break;
+    case "get":
+      if (!positional[0] || !positional[1]) throw new Error("get requires category and id");
+      result = await request(
+        `/v1/memories/${encodeURIComponent(positional[0])}/${encodeURIComponent(positional[1])}`,
         "GET",
         undefined,
         config,

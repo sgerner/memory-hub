@@ -206,6 +206,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "memory_get",
+  {
+    description: "Fetch one full memory by category and id after recall returns a compact hit.",
+    inputSchema: z.object({
+      category: z.string(),
+      memoryId: z.string(),
+    }),
+  },
+  async ({ category, memoryId }) =>
+    textResult(await gatewayRequest(`/v1/memories/${encodeURIComponent(category)}/${encodeURIComponent(memoryId)}`))
+);
+
+server.registerTool(
   "memory_patch",
   {
     description: "Patch memory content or metadata.",

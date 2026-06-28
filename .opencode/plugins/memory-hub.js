@@ -211,6 +211,18 @@ function memoryTools() {
         return memoryOutput(await gatewayRequest(`/v1/memories/${encodeURIComponent(category)}?${params}`));
       },
     }),
+    memory_get: tool({
+      description: "Fetch one full memory by category and id after recall returns a compact hit.",
+      args: {
+        category: tool.schema.string(),
+        memoryId: tool.schema.string(),
+      },
+      async execute(args) {
+        return memoryOutput(
+          await gatewayRequest(`/v1/memories/${encodeURIComponent(args.category)}/${encodeURIComponent(args.memoryId)}`)
+        );
+      },
+    }),
     memory_patch: tool({
       description: "Patch memory content or metadata.",
       args: {
