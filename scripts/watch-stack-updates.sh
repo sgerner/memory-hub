@@ -8,7 +8,13 @@ cd /app
 branch="${MEMORY_HUB_UPDATE_BRANCH:-main}"
 interval="${MEMORY_HUB_UPDATE_INTERVAL_SECONDS:-900}"
 targets="${MEMORY_HUB_UPDATE_SERVICES:-}"
+profiles="${MEMORY_HUB_UPDATE_PROFILES:-local-backend local-db local-ollama}"
 repo_url="${MEMORY_HUB_UPDATE_REPO_URL:-https://github.com/sgerner/memory-hub.git}"
+
+compose_profile_args=""
+for profile in $profiles; do
+  compose_profile_args="$compose_profile_args --profile $profile"
+done
 
 log() {
   printf '%s\n' "$*"
@@ -22,9 +28,12 @@ rebuild_stack() {
     # shellcheck disable=SC2086
     set -- $targets
     log "Rebuilding targeted services: $targets"
-    docker compose up -d --build "$@"
+    # shellcheck disable=SC2086
+    docker compose $compose_profile_args up -d --build "$@"
   else
-    targets="$(docker compose config --services | grep -v '^memory-hub-updater$' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    # Include services behind profiles; otherwise local backend services never rebuild.
+    # shellcheck disable=SC2086
+    targets="$(docker compose $compose_profile_args config --services | grep -v '^memory-hub-updater$' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     if [ -z "$targets" ]; then
       log "No active compose services found to rebuild."
       return 0
@@ -32,7 +41,8 @@ rebuild_stack() {
     # shellcheck disable=SC2086
     set -- $targets
     log "Rebuilding active compose services: $targets"
-    docker compose up -d --build "$@"
+    # shellcheck disable=SC2086
+    docker compose $compose_profile_args up -d --build "$@"
   fi
 }
 

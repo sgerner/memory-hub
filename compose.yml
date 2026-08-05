@@ -360,6 +360,7 @@ services:
       MEMORY_HUB_UPDATE_INTERVAL_SECONDS: ${MEMORY_HUB_UPDATE_INTERVAL_SECONDS:-900}
       MEMORY_HUB_UPDATE_REPO_URL: ${MEMORY_HUB_UPDATE_REPO_URL:-https://github.com/sgerner/memory-hub.git}
       MEMORY_HUB_UPDATE_SERVICES: ${MEMORY_HUB_UPDATE_SERVICES:-}
+      MEMORY_HUB_UPDATE_PROFILES: ${MEMORY_HUB_UPDATE_PROFILES:-local-backend local-db local-ollama}
     command: ["/bin/sh", "/app/scripts/watch-stack-updates.sh"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

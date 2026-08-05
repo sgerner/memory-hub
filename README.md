@@ -199,8 +199,17 @@ Profiles:
 - `local-db` starts Postgres
 - `local-ollama` starts Ollama
 - `local-backend` starts the Memorex API, embedding worker, and backup stager
+- `remote-update` starts the GitHub polling updater, which checks `main` every 15 minutes and rebuilds the local checkout when it changes
 
 The ingestion workers, gateway, and dashboard are always defined. They attach to either the local backend or your existing backend URL.
+
+To keep a deployed checkout synchronized with GitHub, enable the updater profile:
+
+```bash
+docker compose --profile remote-update up -d memory-hub-updater
+```
+
+The updater includes services behind `local-backend`, `local-db`, and `local-ollama` by default. Set `MEMORY_HUB_UPDATE_SERVICES` only when you intentionally want a narrower rebuild set.
 
 ## Runtime data layout
 
