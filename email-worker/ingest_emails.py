@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 AGENTMEMORY_URL = os.getenv("AGENTMEMORY_URL", "http://agentmemory:3111")
 AGENTMEMORY_TOKEN = os.getenv("AGENTMEMORY_TOKEN")
-DEFAULT_BATCH_SIZE = int(os.getenv("BATCH_SIZE", os.getenv("INGEST_BATCH_SIZE", "2000")))
-DEFAULT_SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", os.getenv("INGEST_SLEEP_INTERVAL", "300")))
+DEFAULT_BATCH_SIZE = int(os.getenv("BATCH_SIZE", os.getenv("INGEST_BATCH_SIZE", "200")))
+DEFAULT_SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", os.getenv("INGEST_SLEEP_INTERVAL", "900")))
 STATE_PATH = "/app/config/state.json"
 ACCOUNTS_PATH = "/app/config/accounts.json"
 SETTINGS_PATH = "/app/config/settings.json"
@@ -33,6 +33,7 @@ QUARANTINE_FLAGS = {'\\trash', '\\spam', '\\junk', '\\deleted'}
 QUARANTINE_KEYWORDS = ['spam', 'junk', 'trash', 'deleted', 'bulk', 'low-priority']
 DRAFT_FLAGS = {'\\drafts'}
 DRAFT_KEYWORDS = ['draft']
+HEADER_FETCH_ITEMS = ['RFC822.HEADER', 'INTERNALDATE']
 
 session = requests.Session()
 session.headers.update({"Authorization": f"Bearer {AGENTMEMORY_TOKEN}"})
@@ -105,6 +106,64 @@ def normalize_message_id(val):
         text = text[1:-1].strip()
     return text
 
+
+def decode_header_value(value):
+    """Decode all RFC 2047 header fragments without downloading the message body."""
+    if value is None:
+        return ""
+    decoded = []
+    for fragment, encoding in decode_header(str(value)):
+        if isinstance(fragment, bytes):
+            decoded.append(fragment.decode(encoding or "utf-8", errors="replace"))
+        else:
+            decoded.append(str(fragment))
+    return "".join(decoded)
+
+
+def is_all_mail_folder(flags, folder_name):
+    """Return whether a folder is the provider's canonical all-mail view."""
+    norm_flags = {
+        flag.decode('ascii', 'ignore').lower() if isinstance(flag, bytes) else str(flag).lower()
+        for flag in flags
+    }
+    normalized_name = sanitize_str(folder_name).strip().lower()
+    return "\\all" in norm_flags or normalized_name in {
+        "all mail",
+        "[gmail]/all mail",
+        "[google mail]/all mail",
+    }
+
+
+def parse_message_headers(uid, msg_data):
+    """Extract the fields needed for deduplication from RFC822 headers only."""
+    raw_headers = msg_data.get(b'RFC822.HEADER') or msg_data.get('RFC822.HEADER') or b''
+    msg = email.message_from_bytes(raw_headers)
+    return {
+        "uid": uid,
+        "subject": decode_header_value(msg.get("Subject", "No Subject")),
+        "from": sanitize_str(msg.get("From")),
+        "to": sanitize_str(msg.get("To")),
+        "date": str(msg_data.get(b'INTERNALDATE') or msg_data.get('INTERNALDATE') or ""),
+        "message_id": normalize_message_id(msg.get("Message-ID")),
+    }
+
+
+def fetch_message_headers(client, uids):
+    """Fetch small headers for a group of messages, never their bodies or attachments."""
+    if not uids:
+        return {}
+    fetched = client.fetch(uids, HEADER_FETCH_ITEMS)
+    return {
+        uid: parse_message_headers(uid, msg_data)
+        for uid, msg_data in fetched.items()
+    }
+
+
+def message_dedupe_key(summary):
+    """Use Message-ID only; missing IDs must not cause unrelated mail to be merged."""
+    message_id = normalize_message_id(summary.get("message_id"))
+    return message_id or None
+
 def classify_folder(flags, folder_name):
     norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
     folder_lower = sanitize_str(folder_name).lower()
@@ -172,6 +231,31 @@ def delete_from_memory(email_data):
         logger.error(f"Failed to delete memory: {e}")
         return False
 
+def save_account_cursor(state, account_name, account_state, folder_name, uid):
+    account_state[folder_name] = uid
+    state[account_name] = account_state
+    save_state(state)
+
+
+def deferred_status(account_name, started_at, folders_seen, items_processed, items_total, deduplicated):
+    save_status({
+        "service": "email-worker",
+        "status": "deferred",
+        "current_account": account_name,
+        "last_cycle_started_at": started_at,
+        "last_cycle_finished_at": utc_now(),
+        "last_error": "Memory backend is unavailable; remaining email messages were deferred.",
+        "items_processed": items_processed,
+        "items_total": items_total,
+        "details": {
+            "folders_seen": folders_seen,
+            "headers_fetched": items_total,
+            "deduplicated": deduplicated,
+        },
+        "updated_at": utc_now(),
+    })
+
+
 def process_account(account, settings):
     name = account['name']
     host = account['host']
@@ -184,6 +268,8 @@ def process_account(account, settings):
     started_at = utc_now()
     messages_processed = 0
     folders_seen = 0
+    headers_fetched = 0
+    deduplicated = 0
 
     save_status({
         "service": "email-worker",
@@ -198,181 +284,227 @@ def process_account(account, settings):
         try:
             with open(STATE_PATH, 'r') as f:
                 state = json.load(f)
-        except: state = {}
-    
+        except (OSError, ValueError, TypeError):
+            state = {}
+
     account_state = state.get(name, {})
+    if not isinstance(account_state, dict):
+        account_state = {}
 
     try:
         with IMAPClient(host, port=port, ssl=use_ssl) as client:
             client.login(user, password)
             folders = client.list_folders()
-            
-            for (flags, delimiter, folder_name) in folders:
-                if b'\\Noselect' in flags: continue
+            all_mail_folder = next(
+                (
+                    folder_name
+                    for flags, _delimiter, folder_name in folders
+                    if b'\\Noselect' not in flags and is_all_mail_folder(flags, folder_name)
+                ),
+                None,
+            )
+            if all_mail_folder:
+                logger.info(
+                    "Using %s as the canonical normal-mail folder; other normal folders will only advance their cursors.",
+                    all_mail_folder,
+                )
 
-                folder_kind = classify_folder(flags, folder_name)
-                if folder_kind == "draft":
+            candidates = []
+            for flags, _delimiter, folder_name in folders:
+                if b'\\Noselect' in flags:
                     continue
 
-                logger.info(f"Scanning folder: {folder_name}")
+                folder_kind = classify_folder(flags, folder_name)
                 folders_seen += 1
                 try:
                     client.select_folder(folder_name, readonly=True)
-                except: continue
-                
-                last_uid = account_state.get(folder_name, 0)
-                uids = client.search(['UID', f'{last_uid + 1}:*'])
-                uids.sort()
+                    last_uid = int(account_state.get(folder_name, 0) or 0)
+                    uids = sorted(client.search(['UID', f'{last_uid + 1}:*']))
+                except Exception as error:
+                    logger.warning("Could not scan folder %s: %s", folder_name, error)
+                    continue
+
+                if not uids:
+                    continue
+
+                # Drafts are intentionally ignored. With a canonical All Mail folder,
+                # every other normal folder is also redundant for ingestion. Advancing
+                # those cursors prevents an expensive repeat search on every cycle.
+                if folder_kind == "draft" or (
+                    folder_kind == "normal" and all_mail_folder and folder_name != all_mail_folder
+                ):
+                    save_account_cursor(state, name, account_state, folder_name, uids[-1])
+                    logger.info("Skipped %s pending messages from redundant folder %s", len(uids), folder_name)
+                    continue
+
                 uids_to_process = uids[:settings["batch_size"]]
-                
-                if not uids_to_process: continue
+                logger.info(
+                    "%s %s messages from %s using header-first deduplication",
+                    "Purging" if folder_kind == "quarantine" else "Reviewing",
+                    len(uids_to_process),
+                    folder_name,
+                )
+                try:
+                    header_map = fetch_message_headers(client, uids_to_process)
+                except Exception as error:
+                    logger.warning("Could not fetch headers from folder %s: %s", folder_name, error)
+                    continue
+
+                headers_fetched += len(header_map)
+                for uid in uids_to_process:
+                    summary = header_map.get(uid)
+                    if summary is not None:
+                        candidates.append({
+                            "folder": folder_name,
+                            "kind": folder_kind,
+                            "summary": summary,
+                        })
+
+            quarantine_keys = {
+                message_dedupe_key(candidate["summary"])
+                for candidate in candidates
+                if candidate["kind"] == "quarantine" and message_dedupe_key(candidate["summary"])
+            }
+            seen_message_ids = set()
+            purged_message_ids = set()
+            selected_folder = None
+
+            # Process quarantine headers first so a message that exists in both a
+            # quarantine folder and a normal folder is not re-added to memory.
+            ordered_candidates = sorted(
+                candidates,
+                key=lambda candidate: candidate["kind"] != "quarantine",
+            )
+            for candidate in ordered_candidates:
+                folder_name = candidate["folder"]
+                folder_kind = candidate["kind"]
+                summary = candidate["summary"]
+                uid = summary["uid"]
+                key = message_dedupe_key(summary)
 
                 if folder_kind == "quarantine":
-                    logger.info(f"Purging {len(uids_to_process)} emails from {folder_name}")
-                else:
-                    logger.info(f"Ingesting {len(uids_to_process)} emails from {folder_name}")
+                    if key and key in purged_message_ids:
+                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        deduplicated += 1
+                        continue
+                    if delete_from_memory({
+                        "account_name": name,
+                        "uid": uid,
+                        "subject": summary["subject"],
+                        "from": summary["from"],
+                        "to": summary["to"],
+                        "date": summary["date"],
+                        "folder": folder_name,
+                        "message_id": summary["message_id"],
+                        "reason": "quarantine folder",
+                    }):
+                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        if key:
+                            purged_message_ids.add(key)
+                        messages_processed += 1
+                        continue
 
-                for uid in uids_to_process:
-                    try:
-                        msg_data = client.fetch([uid], ['RFC822', 'INTERNALDATE'])
-                        raw_email = msg_data[uid][b'RFC822']
-                        msg = email.message_from_bytes(raw_email)
-                        
-                        subject_header = decode_header(msg.get("Subject", "No Subject"))[0]
-                        subject = subject_header[0]
-                        if isinstance(subject, bytes):
-                            encoding = subject_header[1] or 'utf-8'
-                            subject = subject.decode(encoding, errors='ignore')
-                        
-                        from_ = msg.get("From")
-                        to_ = msg.get("To")
-                        date_ = str(msg_data[uid][b'INTERNALDATE'])
-                        message_id = normalize_message_id(msg.get("Message-ID"))
+                    deferred_status(name, started_at, folders_seen, messages_processed, headers_fetched, deduplicated)
+                    return True
 
-                        if folder_kind == "quarantine":
-                            if delete_from_memory({
-                                "account_name": name,
-                                "uid": uid,
-                                "subject": subject,
-                                "from": from_,
-                                "to": to_,
-                                "date": date_,
-                                "folder": folder_name,
-                                "message_id": message_id,
-                                "reason": "quarantine folder",
-                            }):
-                                account_state[folder_name] = uid
-                                state[name] = account_state
-                                save_state(state)
-                                messages_processed += 1
+                if key and (key in seen_message_ids or key in quarantine_keys):
+                    save_account_cursor(state, name, account_state, folder_name, uid)
+                    deduplicated += 1
+                    continue
+
+                if selected_folder != folder_name:
+                    client.select_folder(folder_name, readonly=True)
+                    selected_folder = folder_name
+
+                try:
+                    msg_data = client.fetch([uid], ['RFC822', 'INTERNALDATE'])[uid]
+                    raw_email = msg_data[b'RFC822']
+                    msg = email.message_from_bytes(raw_email)
+                    subject = decode_header_value(msg.get("Subject", "No Subject"))
+                    from_ = msg.get("From")
+                    to_ = msg.get("To")
+                    date_ = str(msg_data[b'INTERNALDATE'])
+                    message_id = normalize_message_id(msg.get("Message-ID"))
+
+                    body = ""
+                    attachments = []
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            content_disposition = str(part.get("Content-Disposition", ""))
+                            if "attachment" in content_disposition or part.get_filename():
+                                filename = part.get_filename()
+                                if filename:
+                                    filename_str = decode_header_value(filename)
+                                    attachments.append(filename_str)
+
+                                    payload_bytes = part.get_payload(decode=True)
+                                    if payload_bytes:
+                                        ext = filename_str.lower().split('.')[-1]
+                                        extracted_text = ""
+                                        try:
+                                            if ext == 'txt':
+                                                extracted_text = payload_bytes.decode(errors='ignore')
+                                            elif ext == 'pdf':
+                                                pdf_file = io.BytesIO(payload_bytes)
+                                                reader = PdfReader(pdf_file)
+                                                extracted_text = "\n".join(
+                                                    page.extract_text() or "" for page in reader.pages
+                                                )
+                                            elif ext == 'docx':
+                                                docx_file = io.BytesIO(payload_bytes)
+                                                extracted_text = docx2txt.process(docx_file)
+                                        except Exception:
+                                            pass
+
+                                        if extracted_text.strip():
+                                            body += f"\n\n--- Attachment Content: {filename_str} ---\n"
+                                            body += extracted_text[:settings["attachment_text_limit"]]
+                                            body += "\n--- End Attachment ---"
                                 continue
 
-                            logger.warning(
-                                "Memory backend is busy; deferring remaining quarantine messages for this account until the next cycle."
-                            )
-                            save_status({
-                                "service": "email-worker",
-                                "status": "deferred",
-                                "current_account": name,
-                                "last_cycle_started_at": started_at,
-                                "last_cycle_finished_at": utc_now(),
-                                "last_error": "Memory backend is unavailable; remaining quarantine messages were deferred.",
-                                "items_processed": messages_processed,
-                                "items_total": len(uids_to_process),
-                                "details": {"folders_seen": folders_seen},
-                                "updated_at": utc_now(),
-                            })
-                            return True
+                            if part.get_content_type() == "text/plain" and not body:
+                                try:
+                                    body = part.get_payload(decode=True).decode(errors='ignore')
+                                except Exception:
+                                    pass
+                            elif part.get_content_type() == "text/html" and not body:
+                                try:
+                                    html_body = part.get_payload(decode=True).decode(errors='ignore')
+                                    body = clean_text(html_body)
+                                except Exception:
+                                    pass
+                    else:
+                        try:
+                            body = msg.get_payload(decode=True).decode(errors='ignore')
+                        except Exception:
+                            pass
 
-                        body = ""
-                        attachments = []
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                content_disposition = str(part.get("Content-Disposition", ""))
-                                if "attachment" in content_disposition or part.get_filename():
-                                    filename = part.get_filename()
-                                    if filename:
-                                        decoded_filename = decode_header(filename)[0][0]
-                                        if isinstance(decoded_filename, bytes):
-                                            try: decoded_filename = decoded_filename.decode(errors='ignore')
-                                            except: pass
-                                        
-                                        filename_str = str(decoded_filename)
-                                        attachments.append(filename_str)
-                                        
-                                        payload_bytes = part.get_payload(decode=True)
-                                        if payload_bytes:
-                                            ext = filename_str.lower().split('.')[-1]
-                                            extracted_text = ""
-                                            try:
-                                                if ext == 'txt': extracted_text = payload_bytes.decode(errors='ignore')
-                                                elif ext == 'pdf':
-                                                    pdf_file = io.BytesIO(payload_bytes)
-                                                    reader = PdfReader(pdf_file)
-                                                    extracted_text = "\n".join([page.extract_text() or "" for page in reader.pages])
-                                                elif ext == 'docx':
-                                                    docx_file = io.BytesIO(payload_bytes)
-                                                    extracted_text = docx2txt.process(docx_file)
-                                            except: pass
-                                                
-                                            if extracted_text.strip():
-                                                body += f"\n\n--- Attachment Content: {filename_str} ---\n"
-                                                body += extracted_text[:settings["attachment_text_limit"]]
-                                                body += "\n--- End Attachment ---"
-                                    continue
-                                    
-                                if part.get_content_type() == "text/plain" and not body:
-                                    try: body = part.get_payload(decode=True).decode(errors='ignore')
-                                    except: pass
-                                elif part.get_content_type() == "text/html" and not body:
-                                    try:
-                                        html_body = part.get_payload(decode=True).decode(errors='ignore')
-                                        body = clean_text(html_body)
-                                    except: pass
-                        else:
-                            try: body = msg.get_payload(decode=True).decode(errors='ignore')
-                            except: pass
-                            
-                        if attachments:
-                            body += "\n\nAttachments: " + ", ".join(attachments)
+                    if attachments:
+                        body += "\n\nAttachments: " + ", ".join(attachments)
 
-                        if push_to_memory({
-                            "account_name": name,
-                            "uid": uid,
-                            "subject": subject,
-                            "from": from_,
-                            "to": to_,
-                            "date": date_,
-                            "body": body,
-                            "folder": folder_name,
-                            "message_id": message_id,
-                        }):
-                            account_state[folder_name] = uid
-                            state[name] = account_state
-                            save_state(state)
-                            messages_processed += 1
-                        else:
-                            logger.warning(
-                                "Memory backend is busy; deferring remaining email messages for this account until the next cycle."
-                            )
-                            save_status({
-                                "service": "email-worker",
-                                "status": "deferred",
-                                "current_account": name,
-                                "last_cycle_started_at": started_at,
-                                "last_cycle_finished_at": utc_now(),
-                                "last_error": "Memory backend is unavailable; remaining messages were deferred.",
-                                "items_processed": messages_processed,
-                                "items_total": len(uids_to_process),
-                                "details": {"folders_seen": folders_seen},
-                                "updated_at": utc_now(),
-                            })
-                            return True
-                    except Exception as e:
-                        logger.error(f"Error processing email UID {uid}: {e}")
-            
-    except Exception as e:
-        error_str = str(e)
+                    if push_to_memory({
+                        "account_name": name,
+                        "uid": uid,
+                        "subject": subject,
+                        "from": from_,
+                        "to": to_,
+                        "date": date_,
+                        "body": body,
+                        "folder": folder_name,
+                        "message_id": message_id,
+                    }):
+                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        if key or message_id:
+                            seen_message_ids.add(key or message_id)
+                        messages_processed += 1
+                    else:
+                        deferred_status(name, started_at, folders_seen, messages_processed, headers_fetched, deduplicated)
+                        return True
+                except Exception as error:
+                    logger.error("Error processing email UID %s in %s: %s", uid, folder_name, error)
+
+    except Exception as error:
+        error_str = str(error)
         if "AUTHENTICATIONFAILED" in error_str or "Invalid credentials" in error_str:
             human_error = f"Invalid password for account: {name}"
         else:
@@ -387,7 +519,11 @@ def process_account(account, settings):
             "last_cycle_finished_at": utc_now(),
             "last_error": human_error,
             "items_processed": messages_processed,
-            "details": {"folders_seen": folders_seen},
+            "details": {
+                "folders_seen": folders_seen,
+                "headers_fetched": headers_fetched,
+                "deduplicated": deduplicated,
+            },
             "updated_at": utc_now(),
         })
         return False
@@ -400,7 +536,11 @@ def process_account(account, settings):
         "last_cycle_finished_at": utc_now(),
         "last_success_at": utc_now(),
         "items_processed": messages_processed,
-        "details": {"folders_seen": folders_seen},
+        "details": {
+            "folders_seen": folders_seen,
+            "headers_fetched": headers_fetched,
+            "deduplicated": deduplicated,
+        },
         "updated_at": utc_now(),
     })
     return True
