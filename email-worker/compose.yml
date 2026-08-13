@@ -6,8 +6,8 @@ services:
     environment:
       - AGENTMEMORY_URL=${AGENTMEMORY_URL:-http://agentmemory:3111}
       - AGENTMEMORY_TOKEN=${AGENTMEMORY_TOKEN:?Set AGENTMEMORY_TOKEN in .env}
-      - BATCH_SIZE=${EMAIL_BATCH_SIZE:-2000}
-      - SLEEP_INTERVAL=${EMAIL_SLEEP_INTERVAL:-60}
+      - BATCH_SIZE=${EMAIL_BATCH_SIZE:-200}
+      - SLEEP_INTERVAL=${EMAIL_SLEEP_INTERVAL:-900}
     volumes:
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/email-worker:/app/config
       - ${MEMORY_DATA_DIR:?Set MEMORY_DATA_DIR in .env}/settings/email.json:/app/config/settings.json:ro

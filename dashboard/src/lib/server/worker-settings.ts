@@ -59,7 +59,7 @@ const definitions: WorkerDefinition[] = [
 		name: 'Email',
 		description: 'IMAP ingestion and attachment extraction.',
 		file: 'email.json',
-		defaults: { batch_size: 2000, sleep_interval: 60, attachment_text_limit: 50000 },
+		defaults: { batch_size: 200, sleep_interval: 900, attachment_text_limit: 50000 },
 		fields: [
 			numberField('batch_size', 'Batch size', 'Maximum new messages per folder per cycle.', 1, 10000),
 			numberField('sleep_interval', 'Poll interval', 'Seconds between mail cycles.', 30, 86400),
