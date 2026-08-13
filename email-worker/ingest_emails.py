@@ -164,6 +164,16 @@ def message_dedupe_key(summary):
     message_id = normalize_message_id(summary.get("message_id"))
     return message_id or None
 
+
+def new_uids_after(last_uid, search_results):
+    """Discard IMAP's wildcard fallback when the requested UID is past the mailbox end.
+
+    A UID sequence such as ``101:*`` can still include UID 100 when 100 is the
+    mailbox's highest UID because ``*`` resolves to 100. Filtering client-side
+    prevents the newest message from being processed again on every cycle.
+    """
+    return sorted(uid for uid in search_results if int(uid) > last_uid)
+
 def classify_folder(flags, folder_name):
     norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
     folder_lower = sanitize_str(folder_name).lower()
@@ -319,7 +329,10 @@ def process_account(account, settings):
                 try:
                     client.select_folder(folder_name, readonly=True)
                     last_uid = int(account_state.get(folder_name, 0) or 0)
-                    uids = sorted(client.search(['UID', f'{last_uid + 1}:*']))
+                    uids = new_uids_after(
+                        last_uid,
+                        client.search(['UID', f'{last_uid + 1}:*']),
+                    )
                 except Exception as error:
                     logger.warning("Could not scan folder %s: %s", folder_name, error)
                     continue

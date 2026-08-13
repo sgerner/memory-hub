@@ -64,6 +64,10 @@ class FakeIMAPClient:
 
 
 class EmailWorkerTests(unittest.TestCase):
+    def test_uid_search_drops_wildcard_fallback_at_mailbox_end(self):
+        self.assertEqual(worker.new_uids_after(100, [100]), [])
+        self.assertEqual(worker.new_uids_after(100, [102, 101, 100]), [101, 102])
+
     def test_all_mail_detection_and_header_parsing(self):
         self.assertTrue(worker.is_all_mail_folder([b"\\All"], "Archive"))
         self.assertTrue(worker.is_all_mail_folder([], "[Gmail]/All Mail"))
