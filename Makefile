@@ -25,6 +25,9 @@ INGEST_DIR := $(MEMORY_INGEST_DIR)
 OBSIDIAN_DIR := $(MEMORY_OBSIDIAN_DIR)
 DEFAULTS_DIR := $(CURDIR)/defaults
 MEMORY_NETWORK ?= $(if $(MEMORY_NETWORK_NAME),$(MEMORY_NETWORK_NAME),memory-internal)
+KOPIA_IGNORE_FILE := $(CURDIR)/kopia/appdata.kopiaignore
+KOPIA_SOURCE_ROOT ?= $(abspath $(DATA_DIR)/..)
+KOPIA_IGNORE_TARGET := $(KOPIA_SOURCE_ROOT)/.kopiaignore
 
 .PHONY: init up down logs ps rebuild
 
@@ -47,6 +50,9 @@ init:
 		"$(INGEST_DIR)/gdrive" \
 		"$(INGEST_DIR)/docs" \
 		"$(OBSIDIAN_DIR)"
+	@if [ ! -e "$(KOPIA_IGNORE_TARGET)" ] || ! cmp -s "$(KOPIA_IGNORE_FILE)" "$(KOPIA_IGNORE_TARGET)"; then \
+		cp "$(KOPIA_IGNORE_FILE)" "$(KOPIA_IGNORE_TARGET)"; \
+	fi
 	@for file in documents email obsidian github enrichment secrets; do \
 		src="$(DEFAULTS_DIR)/settings/$$file.json"; \
 		dst="$(DATA_DIR)/settings/$$file.json"; \
