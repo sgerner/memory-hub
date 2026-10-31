@@ -1,0 +1,16 @@
+# The database is backed up consistently through the logical directory dump.
+memory-hub/postgres/**
+
+# Model blobs can be pulled again and are not required to restore the service.
+memory-hub/ollama/**
+
+# These are caches or generated build environments.
+**/.cache/**
+**/.pytest_cache/**
+**/.venv/**
+jellyfin/.nv/**
+
+# Do not keep uploading the legacy timestamped full dumps. The current
+# directory-format dump under memory-hub/backups/agentmemory-db is retained.
+memory-hub/backups/agentmemory-db-*.sql.gz
+memory-hub/backups/memory-hub-settings-*.tar.gz

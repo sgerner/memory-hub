@@ -131,7 +131,8 @@ The stack is driven by `.env`. The most important values are:
 | `NVIDIA_ENABLE_THINKING` | Whether to allow NIM thinking; defaults to `false` |
 | `ENRICH_FALLBACK_REQUESTS_PER_MINUTE` | Rate cap for the OpenCode enrichment lane |
 | `BACKUP_INTERVAL_SECONDS` | Backup cadence, daily by default |
-| `BACKUP_RETENTION_DAYS` | How many days of backups to keep, 7 by default |
+| `BACKUP_DB_READY_TIMEOUT_SECONDS` | How long the backup stager waits for PostgreSQL before recording an error |
+| `BACKUP_DB_DUMP_JOBS` | Parallel jobs used by the directory-format dump; keep at `1` to minimize load |
 
 The default templates in `defaults/` are copied into the runtime tree by `make init`.
 
@@ -283,12 +284,15 @@ The gateway also supports MCP host and origin allowlists for browser-based clien
 
 The included backup stager captures:
 
-- a PostgreSQL dump
+- a PostgreSQL directory-format dump at `backups/agentmemory-db/`
 - a snapshot of the settings directory
 - a manifest JSON with filenames and timestamps
 
-The backup output lands under `MEMORY_DATA_DIR/backups`.
-It runs on a daily cadence by default, keeps only the newest complete backup for each day, and prunes to a 7-day retention window.
+The backup output lands under `MEMORY_DATA_DIR/backups`. The database dump uses stable table-level filenames and is published only after `pg_dump` and `pg_restore --list` validation succeeds. This allows content-addressed host backups such as Kopia to reuse unchanged table data instead of seeing a new multi-gigabyte compressed stream every day. A failed database connection or validation leaves the previous backup in place and records an error in `status/backup.json`.
+
+The backup stager runs daily by default. Historical versions are retained by Kopia snapshots; the local backup directory contains only the current database dump and settings archive. Existing timestamped `.sql.gz` files are legacy artifacts and are ignored by the checked-in Kopia policy. They can be removed separately after confirming the new backup is valid.
+
+To restore the database dump, use `pg_restore --format=directory --clean --if-exists --no-owner --no-privileges backups/agentmemory-db` against an empty or disposable target database, then restore the settings archive.
 
 If you use Kopia as host-level backup storage, include at least:
 
@@ -297,6 +301,8 @@ If you use Kopia as host-level backup storage, include at least:
 - `/etc/docker/daemon.json`
 - `/etc/fuse.conf` if you use FUSE-backed remote mounts such as rclone
 - any edge configuration you keep outside the repo, such as reverse proxy or SSO files
+
+Run `make init` after checkout to install the tracked `.kopiaignore` policy at the root of the host data tree that the Kopia stack mounts as `/appdata`. It excludes the live PostgreSQL data directory, re-downloadable Ollama model blobs, generated caches, and legacy timestamped dump files. The validated logical database dump remains included.
 
 The remote source-mount configs for `docs/` and `gdrive/` live under `MEMORY_DATA_DIR`, so the backup above already preserves the settings needed to remount them after a rebuild. The data behind those mounts, plus the Obsidian vault, are treated as external source data and are not part of this host backup.
 
