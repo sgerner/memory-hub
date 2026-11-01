@@ -30,9 +30,9 @@ ACCOUNTS_PATH = "/app/config/accounts.json"
 SETTINGS_PATH = "/app/config/settings.json"
 STATUS_PATH = os.getenv("STATUS_PATH", "/app/status/email-worker.json")
 QUARANTINE_FLAGS = {'\\trash', '\\spam', '\\junk', '\\deleted'}
-QUARANTINE_KEYWORDS = ['spam', 'junk', 'trash', 'deleted', 'bulk', 'low-priority']
+QUARANTINE_NAMES = {'spam', 'junk', 'junk e-mail', 'trash', 'deleted', 'deleted items', 'deleted messages', 'bulk mail'}
 DRAFT_FLAGS = {'\\drafts'}
-DRAFT_KEYWORDS = ['draft']
+DRAFT_NAMES = {'draft', 'drafts'}
 HEADER_FETCH_ITEMS = ['RFC822.HEADER', 'INTERNALDATE']
 
 session = requests.Session()
@@ -174,12 +174,20 @@ def new_uids_after(last_uid, search_results):
     """
     return sorted(uid for uid in search_results if int(uid) > last_uid)
 
-def classify_folder(flags, folder_name):
-    norm_flags = [f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags]
-    folder_lower = sanitize_str(folder_name).lower()
-    if any(flag in DRAFT_FLAGS for flag in norm_flags) or any(keyword in folder_lower for keyword in DRAFT_KEYWORDS):
+def classify_folder(flags, folder_name, delimiter=None, special_use_flags=()):
+    norm_flags = {f.decode('ascii', 'ignore').lower() if isinstance(f, bytes) else str(f).lower() for f in flags}
+    # Explicit server flags take precedence over names, including user labels.
+    if norm_flags & DRAFT_FLAGS:
         return "draft"
-    if any(flag in QUARANTINE_FLAGS for flag in norm_flags) or any(keyword in folder_lower for keyword in QUARANTINE_KEYWORDS):
+    if norm_flags & QUARANTINE_FLAGS:
+        return "quarantine"
+    if isinstance(delimiter, bytes):
+        delimiter = delimiter.decode('ascii', 'ignore')
+    leaf = sanitize_str(folder_name).rsplit(delimiter, 1)[-1] if delimiter else sanitize_str(folder_name)
+    leaf = leaf.lower()
+    if not set(special_use_flags) & DRAFT_FLAGS and leaf in DRAFT_NAMES:
+        return "draft"
+    if not set(special_use_flags) & QUARANTINE_FLAGS and leaf in QUARANTINE_NAMES:
         return "quarantine"
     return "normal"
 
@@ -305,6 +313,10 @@ def process_account(account, settings):
         with IMAPClient(host, port=port, ssl=use_ssl) as client:
             client.login(user, password)
             folders = client.list_folders()
+            special_use_flags = {
+                flag.decode('ascii', 'ignore').lower() if isinstance(flag, bytes) else str(flag).lower()
+                for flags, _, _ in folders for flag in flags
+            }
             all_mail_folder = next(
                 (
                     folder_name
@@ -320,11 +332,11 @@ def process_account(account, settings):
                 )
 
             candidates = []
-            for flags, _delimiter, folder_name in folders:
+            for flags, delimiter, folder_name in folders:
                 if b'\\Noselect' in flags:
                     continue
 
-                folder_kind = classify_folder(flags, folder_name)
+                folder_kind = classify_folder(flags, folder_name, delimiter, special_use_flags)
                 folders_seen += 1
                 try:
                     client.select_folder(folder_name, readonly=True)
