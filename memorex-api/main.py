@@ -1354,7 +1354,7 @@ def delete_email(data: EmailDelete, token: str = Depends(verify_token)):
             if data.folder and data.uid:
                 delete_attempts.append(("account = %s AND folder = %s AND uid = %s", [account, sanitize(data.folder), sanitize(data.uid)]))
 
-            if not delete_attempts and len(matched) >= 2:
+            if not message_id and len(matched) >= 2:
                 delete_attempts.append(
                     (
                         " AND ".join(["account = %s", *[f"{field} = %s" for field, _ in matched]]),
