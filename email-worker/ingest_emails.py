@@ -203,6 +203,7 @@ def push_to_memory(email_data):
                 "date": sanitize_str(email_data['date']),
                 "account": sanitize_str(email_data['account_name']),
                 "uid": sanitize_str(email_data['uid']),
+                "uidvalidity": sanitize_str(email_data['uidvalidity']),
                 "message_id": normalize_message_id(email_data.get('message_id')),
                 "needs_enrichment": "True", # Store as string for metadata filter reliability
                 "source": "email",
@@ -225,6 +226,7 @@ def delete_from_memory(email_data):
             "account": sanitize_str(email_data['account_name']),
             "folder": sanitize_str(email_data.get('folder', '')),
             "uid": sanitize_str(email_data.get('uid', '')),
+            "uidvalidity": sanitize_str(email_data['uidvalidity']),
             "message_id": normalize_message_id(email_data.get('message_id')),
             "subject": sanitize_str(email_data.get('subject')),
             "sender": sanitize_str(email_data.get('from')),
@@ -241,20 +243,20 @@ def delete_from_memory(email_data):
         logger.error(f"Failed to delete memory: {e}")
         return False
 
-def save_account_cursor(state, account_name, account_state, folder_name, uid):
-    account_state[folder_name] = uid
+def save_account_cursor(state, account_name, account_state, folder_name, uid, uidvalidity):
+    account_state[folder_name] = {"uid": int(uid), "uidvalidity": str(uidvalidity)}
     state[account_name] = account_state
     save_state(state)
 
 
-def deferred_status(account_name, started_at, folders_seen, items_processed, items_total, deduplicated):
+def deferred_status(account_name, started_at, folders_seen, items_processed, items_total, deduplicated, reason=None):
     save_status({
         "service": "email-worker",
         "status": "deferred",
         "current_account": account_name,
         "last_cycle_started_at": started_at,
         "last_cycle_finished_at": utc_now(),
-        "last_error": "Memory backend is unavailable; remaining email messages were deferred.",
+        "last_error": reason or "Memory backend is unavailable; remaining email messages were deferred.",
         "items_processed": items_processed,
         "items_total": items_total,
         "details": {
@@ -327,8 +329,13 @@ def process_account(account, settings):
                 folder_kind = classify_folder(flags, folder_name)
                 folders_seen += 1
                 try:
-                    client.select_folder(folder_name, readonly=True)
-                    last_uid = int(account_state.get(folder_name, 0) or 0)
+                    selected = client.select_folder(folder_name, readonly=True)
+                    uidvalidity = str(selected[b'UIDVALIDITY'])
+                    cursor = account_state.get(folder_name)
+                    # Legacy bare UIDs have no trusted epoch: rescan once safely.
+                    last_uid = int(cursor.get("uid", 0)) if isinstance(cursor, dict) and str(cursor.get("uidvalidity")) == uidvalidity else 0
+                    if cursor is not None and last_uid == 0:
+                        logger.info("Resetting cursor for %s: UIDVALIDITY changed or was not recorded", folder_name)
                     uids = new_uids_after(
                         last_uid,
                         client.search(['UID', f'{last_uid + 1}:*']),
@@ -346,7 +353,7 @@ def process_account(account, settings):
                 if folder_kind == "draft" or (
                     folder_kind == "normal" and all_mail_folder and folder_name != all_mail_folder
                 ):
-                    save_account_cursor(state, name, account_state, folder_name, uids[-1])
+                    save_account_cursor(state, name, account_state, folder_name, uids[-1], uidvalidity)
                     logger.info("Skipped %s pending messages from redundant folder %s", len(uids), folder_name)
                     continue
 
@@ -362,14 +369,26 @@ def process_account(account, settings):
                 except Exception as error:
                     logger.warning("Could not fetch headers from folder %s: %s", folder_name, error)
                     continue
-
                 headers_fetched += len(header_map)
+
+                # Header fetches can overlap a mailbox reset. Recheck before using
+                # the UID/header pairs or advancing any cursor for this epoch.
+                selected = client.select_folder(folder_name, readonly=True)
+                if str(selected[b'UIDVALIDITY']) != uidvalidity:
+                    logger.warning("UIDVALIDITY changed while scanning %s; deferring account", folder_name)
+                    deferred_status(
+                        name, started_at, folders_seen, messages_processed, headers_fetched, deduplicated,
+                        "UIDVALIDITY changed during scan; remaining email messages were deferred.",
+                    )
+                    return True
+
                 for uid in uids_to_process:
                     summary = header_map.get(uid)
                     if summary is not None:
                         candidates.append({
                             "folder": folder_name,
                             "kind": folder_kind,
+                            "uidvalidity": uidvalidity,
                             "summary": summary,
                         })
 
@@ -393,16 +412,18 @@ def process_account(account, settings):
                 folder_kind = candidate["kind"]
                 summary = candidate["summary"]
                 uid = summary["uid"]
+                uidvalidity = candidate["uidvalidity"]
                 key = message_dedupe_key(summary)
 
                 if folder_kind == "quarantine":
                     if key and key in purged_message_ids:
-                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        save_account_cursor(state, name, account_state, folder_name, uid, uidvalidity)
                         deduplicated += 1
                         continue
                     if delete_from_memory({
                         "account_name": name,
                         "uid": uid,
+                        "uidvalidity": uidvalidity,
                         "subject": summary["subject"],
                         "from": summary["from"],
                         "to": summary["to"],
@@ -411,7 +432,7 @@ def process_account(account, settings):
                         "message_id": summary["message_id"],
                         "reason": "quarantine folder",
                     }):
-                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        save_account_cursor(state, name, account_state, folder_name, uid, uidvalidity)
                         if key:
                             purged_message_ids.add(key)
                         messages_processed += 1
@@ -421,12 +442,19 @@ def process_account(account, settings):
                     return True
 
                 if key and (key in seen_message_ids or key in quarantine_keys):
-                    save_account_cursor(state, name, account_state, folder_name, uid)
+                    save_account_cursor(state, name, account_state, folder_name, uid, uidvalidity)
                     deduplicated += 1
                     continue
 
                 if selected_folder != folder_name:
-                    client.select_folder(folder_name, readonly=True)
+                    selected = client.select_folder(folder_name, readonly=True)
+                    if str(selected[b'UIDVALIDITY']) != uidvalidity:
+                        logger.warning("UIDVALIDITY changed during scan of %s; deferring account", folder_name)
+                        deferred_status(
+                            name, started_at, folders_seen, messages_processed, headers_fetched, deduplicated,
+                            "UIDVALIDITY changed during scan; remaining email messages were deferred.",
+                        )
+                        return True
                     selected_folder = folder_name
 
                 try:
@@ -498,6 +526,7 @@ def process_account(account, settings):
                     if push_to_memory({
                         "account_name": name,
                         "uid": uid,
+                        "uidvalidity": uidvalidity,
                         "subject": subject,
                         "from": from_,
                         "to": to_,
@@ -506,7 +535,7 @@ def process_account(account, settings):
                         "folder": folder_name,
                         "message_id": message_id,
                     }):
-                        save_account_cursor(state, name, account_state, folder_name, uid)
+                        save_account_cursor(state, name, account_state, folder_name, uid, uidvalidity)
                         if key or message_id:
                             seen_message_ids.add(key or message_id)
                         messages_processed += 1

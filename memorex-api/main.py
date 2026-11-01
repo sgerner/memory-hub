@@ -480,6 +480,7 @@ class MemoryDelete(BaseModel):
 
 class EmailDelete(BaseModel):
     account: str
+    uidvalidity: Optional[str] = None
     folder: Optional[str] = None
     uid: Optional[str] = None
     message_id: Optional[str] = None
@@ -891,6 +892,7 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
             if data.category == "emails":
                 account, folder, uid = email_identity(metadata)
                 message_id = email_message_id(metadata)
+                uidvalidity = str(metadata["uidvalidity"]) if metadata.get("uidvalidity") is not None else None
                 if account and message_id:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -917,15 +919,17 @@ def remember(data: MemoryCreate, token: str = Depends(verify_token)):
                             }
                 if account and folder and uid:
                     with conn.cursor() as cur:
+                        identity_sql = "account = %s AND folder = %s AND uid = %s"
+                        identity_values = [account, folder, uid]
+                        if uidvalidity:
+                            identity_sql += " AND uidvalidity = %s"
+                            identity_values.append(uidvalidity)
+                        elif "uidvalidity" in existing_columns(cur, table_name):
+                            # Epoch-less clients must not match rows in a known epoch.
+                            identity_sql += " AND uidvalidity IS NULL"
                         cur.execute(
-                            f"""
-                            SELECT id
-                            FROM {table_name}
-                            WHERE account = %s AND folder = %s AND uid = %s
-                            ORDER BY id DESC
-                            LIMIT 1
-                            """,
-                            (account, folder, uid),
+                            f"SELECT id FROM {table_name} WHERE {identity_sql} ORDER BY id DESC LIMIT 1",
+                            tuple(identity_values),
                         )
                         existing = cur.fetchone()
                         if existing:
@@ -1351,7 +1355,11 @@ def delete_email(data: EmailDelete, token: str = Depends(verify_token)):
                 )
 
             if data.folder and data.uid:
-                delete_attempts.append(("account = %s AND folder = %s AND uid = %s", [account, sanitize(data.folder), sanitize(data.uid)]))
+                if data.uidvalidity and "uidvalidity" in existing_cols:
+                    delete_attempts.append(("account = %s AND folder = %s AND uid = %s AND uidvalidity = %s", [account, sanitize(data.folder), sanitize(data.uid), sanitize(data.uidvalidity)]))
+                elif not data.uidvalidity:
+                    # Legacy clients do not know the mailbox epoch.
+                    delete_attempts.append(("account = %s AND folder = %s AND uid = %s", [account, sanitize(data.folder), sanitize(data.uid)]))
 
             if not delete_attempts and len(matched) >= 2:
                 delete_attempts.append(

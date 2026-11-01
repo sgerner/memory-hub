@@ -38,6 +38,7 @@ class FakeIMAPClient:
 
     def select_folder(self, name, readonly=True):
         self.current_folder = name
+        return {b"UIDVALIDITY": 1}
 
     def search(self, _criteria):
         return [1]
