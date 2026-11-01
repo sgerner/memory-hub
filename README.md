@@ -239,6 +239,13 @@ The email worker also uses:
 
 - `email-worker/accounts.json`
 
+Email cursors now store each folder's UID together with its IMAP `UIDVALIDITY`.
+Existing cursors contain only a UID, so the first run after this update rescans
+that folder from UID 1. Message-ID deduplication prevents most duplicates; mail
+without a Message-ID can be duplicated against older rows because their UID
+epoch was not recorded. The backend adds the `uidvalidity` metadata column when
+the worker first writes it; no manual database migration is needed.
+
 The status directory contains per-service snapshots such as:
 
 - `docs-worker.json`
