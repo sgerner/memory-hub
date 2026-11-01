@@ -3,11 +3,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 conn = psycopg2.connect(
-    dbname="agentmemory",
-    user="admin",
-    password="memory-vault-secure-pass",
-    host="memory-db",
-    port=5432
+    dbname=os.getenv("POSTGRES_DB", "agentmemory"),
+    user=os.getenv("POSTGRES_USER", "admin"),
+    password=os.environ["POSTGRES_PASSWORD"],
+    host=os.getenv("POSTGRES_HOST", "memory-db"),
+    port=int(os.getenv("POSTGRES_PORT", "5432"))
 )
 conn.autocommit = True
 
