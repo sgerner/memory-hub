@@ -7,6 +7,7 @@ import re
 import math
 import threading
 import hashlib
+import hmac
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
@@ -431,8 +432,8 @@ def get_cached_embedding(text: str) -> List[float]:
 def verify_token(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
-    token = authorization.split(" ")[1]
-    if token != AUTH_TOKEN:
+    token = authorization.removeprefix("Bearer ")
+    if not token or not hmac.compare_digest(token.encode("utf-8"), AUTH_TOKEN.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Unauthorized")
     return token
 
