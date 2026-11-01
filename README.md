@@ -380,3 +380,35 @@ You can also verify the running services directly:
 ## Sharing this repo
 
 The repo is intended to be committed and shared as source. It should not contain live `.env` files or runtime data.
+
+### Protecting the operator dashboard
+
+The dashboard is a trusted operator interface: it can read and change ingestion
+credentials and browse mounted files. It has no built-in login. Its published
+port binds to `127.0.0.1` by default, for SSH tunneling or a host reverse proxy.
+A container reverse proxy on the `proxy` network should use
+`memory-dashboard:3000`; it does not need a public host port. Set
+`DASHBOARD_BIND_ADDRESS` only when a different trusted interface is required.
+Binding to a tailnet address gives tailnet peers access; it is not a login.
+
+Put dashboard pages and SvelteKit form actions behind your existing Authentik
+forward-auth policy (or equivalent authentication). Do not trust a client-supplied
+identity header as proof of authentication, or permit bearer-header bypasses to
+the dashboard. Verify that unauthenticated requests to `/`, `/settings`, and
+`/access`, including POSTs, are rejected or redirected to sign-in.
+
+Keep machine traffic separate from browser SSO:
+
+- Email, docs, Obsidian, GitHub, and enrichment workers use
+  `AGENTMEMORY_URL=http://agentmemory:3111` on the internal Docker network and
+  `AGENTMEMORY_TOKEN`. They never need a dashboard session.
+- Agents use the gateway bearer token. If sharing a public hostname, route
+  `/mcp*` to the gateway and strip `/api` from `/api/*` before forwarding to the
+  gateway. Apply browser SSO only to the dashboard catch-all. Preserve the
+  Authentik outpost routes required for sign-in.
+- Keep backend and gateway host ports private or firewalled as appropriate;
+  neither should be exposed through an unauthenticated dashboard route.
+
+Changing the Compose file takes effect only after recreating the dashboard
+container. Check the published address with `docker compose ps` and verify that
+other hosts cannot connect directly to port 3000.
