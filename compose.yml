@@ -267,7 +267,7 @@ services:
       - ${MEMORY_INGEST_DIR:?Set MEMORY_INGEST_DIR in .env}:${MEMORY_INGEST_DIR:?Set MEMORY_INGEST_DIR in .env}:ro,rslave
       - ${MEMORY_OBSIDIAN_DIR:?Set MEMORY_OBSIDIAN_DIR in .env}:${MEMORY_OBSIDIAN_DIR:?Set MEMORY_OBSIDIAN_DIR in .env}:ro
     ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${DASHBOARD_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3000}:3000"
     depends_on:
       - memory-agent-gateway
     networks:
